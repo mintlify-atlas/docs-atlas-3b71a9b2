@@ -1,0 +1,532 @@
+---
+title: "event Module API Reference — Crossterm"
+sidebarTitle: "event"
+description: "API reference for the crossterm event module — read, poll, try_read, Event variants, KeyEvent, MouseEvent, and async EventStream."
+---
+
+The `event` module provides a unified interface for reading keyboard, mouse, focus, paste, and terminal resize events. Events are represented by the `Event` enum and its associated types. You can block on an event with `read()`, check availability without blocking with `poll()`, or drain all pending events with `try_read()`. Alternatively, enable the `event-stream` feature to consume events as an asynchronous `Stream`. Mouse and focus events are disabled by default and must be explicitly enabled with the corresponding commands before they will appear in the event stream.
+
+<Warning>
+  `read()`, `poll()`, and `try_read()` must all be called from the **same** thread. Do not mix them with `EventStream`. Raw mode should be enabled for keyboard events to work correctly.
+</Warning>
+
+---
+
+## Functions
+
+### `read`
+
+```rust
+pub fn read() -> std::io::Result<Event>
+```
+
+Blocks the current thread until an `Event` is available, then returns it. If an event is already pending, it returns immediately.
+
+```rust
+use crossterm::event::{read, Event};
+
+loop {
+    match read()? {
+        Event::Key(key) => println!("Key: {:?}", key),
+        Event::Resize(w, h) => println!("Resized to {}×{}", w, h),
+        _ => {}
+    }
+}
+```
+
+---
+
+### `poll`
+
+```rust
+pub fn poll(timeout: Duration) -> std::io::Result<bool>
+```
+
+Checks whether an `Event` is available within the given `timeout`. Returns `Ok(true)` if an event is ready (guaranteeing that the next `read()` call will not block), or `Ok(false)` if the timeout expired with no event.
+
+<ParamField path="timeout" type="Duration" required>
+  Maximum time to wait for an event. Pass `Duration::from_secs(0)` for an instant check.
+</ParamField>
+
+```rust
+use std::time::Duration;
+use crossterm::event::{poll, read};
+
+if poll(Duration::from_millis(100))? {
+    let event = read()?;
+    println!("{:?}", event);
+}
+```
+
+---
+
+### `try_read`
+
+```rust
+pub fn try_read() -> Option<Event>
+```
+
+Attempts to read a pending `Event` without blocking and without returning an error. Returns `Some(Event)` if one is available, or `None` if the event queue is empty. Useful for draining all pending events after a successful `poll()`.
+
+```rust
+use crossterm::event::{poll, try_read};
+use std::time::Duration;
+
+if poll(Duration::from_millis(0))? {
+    while let Some(event) = try_read() {
+        println!("{:?}", event);
+    }
+}
+```
+
+---
+
+## Event Enum
+
+```rust
+pub enum Event {
+    FocusGained,
+    FocusLost,
+    Key(KeyEvent),
+    Mouse(MouseEvent),
+    #[cfg(feature = "bracketed-paste")]
+    Paste(String),
+    Resize(u16, u16),
+}
+```
+
+| Variant | Payload | Description |
+|---|---|---|
+| `FocusGained` | — | Terminal window received focus |
+| `FocusLost` | — | Terminal window lost focus |
+| `Key(KeyEvent)` | [`KeyEvent`](#keyevent-struct) | A keyboard event |
+| `Mouse(MouseEvent)` | [`MouseEvent`](#mouseevent-struct) | A mouse event |
+| `Paste(String)` | `String` | Pasted text (requires `bracketed-paste` feature) |
+| `Resize(u16, u16)` | `(columns, rows)` | Terminal was resized |
+
+<Note>
+  Focus events require `EnableFocusChange`. Mouse events require `EnableMouseCapture`. Paste events require enabling the `bracketed-paste` feature and executing `EnableBracketedPaste`.
+</Note>
+
+### `Event` Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `is_focus_gained()` | `bool` | Returns `true` if `FocusGained` |
+| `is_focus_lost()` | `bool` | Returns `true` if `FocusLost` |
+| `is_key()` | `bool` | Returns `true` if any `Key(_)` variant |
+| `is_key_press()` | `bool` | Returns `true` if a key-press event |
+| `is_key_release()` | `bool` | Returns `true` if a key-release event |
+| `is_key_repeat()` | `bool` | Returns `true` if a key-repeat event |
+| `is_mouse()` | `bool` | Returns `true` if `Mouse(_)` |
+| `is_paste()` | `bool` | Returns `true` if `Paste(_)` (feature-gated) |
+| `is_resize()` | `bool` | Returns `true` if `Resize(_, _)` |
+| `as_key_event()` | `Option<KeyEvent>` | Extracts `KeyEvent` for any key kind |
+| `as_key_press_event()` | `Option<KeyEvent>` | Extracts `KeyEvent` only for press |
+| `as_key_release_event()` | `Option<KeyEvent>` | Extracts `KeyEvent` only for release |
+| `as_key_repeat_event()` | `Option<KeyEvent>` | Extracts `KeyEvent` only for repeat |
+| `as_mouse_event()` | `Option<MouseEvent>` | Extracts `MouseEvent` |
+| `as_paste_event()` | `Option<&str>` | Extracts pasted string (feature-gated) |
+| `as_resize_event()` | `Option<(u16, u16)>` | Extracts `(columns, rows)` |
+
+---
+
+## KeyEvent Struct
+
+```rust
+pub struct KeyEvent {
+    pub code:      KeyCode,
+    pub modifiers: KeyModifiers,
+    pub kind:      KeyEventKind,
+    pub state:     KeyEventState,
+}
+```
+
+<ResponseField name="code" type="KeyCode">
+  The key that was pressed, released, or repeated.
+</ResponseField>
+<ResponseField name="modifiers" type="KeyModifiers">
+  Active modifier keys (Shift, Control, Alt, etc.) at the time of the event.
+</ResponseField>
+<ResponseField name="kind" type="KeyEventKind">
+  Whether this was a `Press`, `Release`, or `Repeat` event. On Unix, `Release` and `Repeat` require `KeyboardEnhancementFlags::REPORT_EVENT_TYPES`. On Windows, all three are always available.
+</ResponseField>
+<ResponseField name="state" type="KeyEventState">
+  Extra key state flags (Caps Lock, Num Lock, Keypad). Requires `KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES`.
+</ResponseField>
+
+**Methods:**
+
+| Method | Returns | Description |
+|---|---|---|
+| `is_press()` | `bool` | `kind == Press` |
+| `is_release()` | `bool` | `kind == Release` |
+| `is_repeat()` | `bool` | `kind == Repeat` |
+
+**Constructors:**
+
+```rust
+KeyEvent::new(code, modifiers)
+KeyEvent::new_with_kind(code, modifiers, kind)
+KeyEvent::new_with_kind_and_state(code, modifiers, kind, state)
+```
+
+`KeyEvent` implements `PartialEq` with case normalization: `Char('d') + SHIFT == Char('D') + SHIFT == Char('D') + NONE`.
+
+---
+
+## KeyCode Enum
+
+```rust
+pub enum KeyCode {
+    Backspace, Enter, Left, Right, Up, Down,
+    Home, End, PageUp, PageDown,
+    Tab, BackTab,
+    Delete, Insert,
+    F(u8),
+    Char(char),
+    Null, Esc,
+    CapsLock, ScrollLock, NumLock,   // require DISAMBIGUATE_ESCAPE_CODES
+    PrintScreen, Pause, Menu,        // require DISAMBIGUATE_ESCAPE_CODES
+    KeypadBegin,                     // requires DISAMBIGUATE_ESCAPE_CODES
+    Media(MediaKeyCode),             // requires DISAMBIGUATE_ESCAPE_CODES
+    Modifier(ModifierKeyCode),       // requires both flags
+}
+```
+
+| Variant | Description |
+|---|---|
+| `Backspace` | Delete on macOS, Backspace elsewhere |
+| `Enter` | Return on macOS, Enter elsewhere |
+| `Left` / `Right` / `Up` / `Down` | Arrow keys |
+| `Home` / `End` | Line navigation |
+| `PageUp` / `PageDown` | Page navigation |
+| `Tab` | Tab key |
+| `BackTab` | Shift+Tab |
+| `Delete` | Fwd Del on macOS, Del elsewhere |
+| `Insert` | Insert key |
+| `F(u8)` | Function keys: `F(1)` = F1, etc. |
+| `Char(char)` | Printable character |
+| `Null` | NUL byte |
+| `Esc` | Escape key |
+| `CapsLock` / `ScrollLock` / `NumLock` | Lock keys |
+| `PrintScreen` / `Pause` / `Menu` | Miscellaneous keys |
+| `KeypadBegin` | Numpad 5 (with Num Lock off) |
+| `Media(MediaKeyCode)` | Media control keys |
+| `Modifier(ModifierKeyCode)` | Standalone modifier key |
+
+**Methods on `KeyCode`:**
+
+| Method | Description |
+|---|---|
+| `is_function_key(n: u8) -> bool` | `true` if `F(n)` |
+| `is_char(c: char) -> bool` | `true` if `Char(c)` |
+| `as_char() -> Option<char>` | Extracts inner `char` if `Char(_)` |
+| `is_media_key(m: MediaKeyCode) -> bool` | `true` if `Media(m)` |
+| `is_modifier(m: ModifierKeyCode) -> bool` | `true` if `Modifier(m)` |
+| `is_backspace()`, `is_enter()`, … | Predicate per unit variant |
+
+---
+
+## KeyModifiers Flags
+
+```rust
+bitflags! {
+    pub struct KeyModifiers: u8 {
+        const SHIFT   = 0b0000_0001;
+        const CONTROL = 0b0000_0010;
+        const ALT     = 0b0000_0100;
+        const SUPER   = 0b0000_1000;
+        const HYPER   = 0b0001_0000;
+        const META    = 0b0010_0000;
+        const NONE    = 0b0000_0000;
+    }
+}
+```
+
+<Note>
+  `SUPER`, `HYPER`, and `META` are only reported when `KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES` is active.
+</Note>
+
+`KeyModifiers` implements `Display`, joining set flags with `+`. On macOS, `CONTROL` displays as "Control", `ALT` as "Option", and `SUPER` as "Command". On Windows, `CONTROL` displays as "Ctrl" and `SUPER` as "Windows".
+
+---
+
+## KeyEventKind Enum
+
+```rust
+pub enum KeyEventKind { Press, Repeat, Release }
+```
+
+| Variant | Description |
+|---|---|
+| `Press` | Key was pressed (default; always available) |
+| `Repeat` | Key is being held and auto-repeating |
+| `Release` | Key was released |
+
+Methods: `is_press()`, `is_repeat()`, `is_release()`.
+
+---
+
+## KeyEventState Flags
+
+```rust
+bitflags! {
+    pub struct KeyEventState: u8 {
+        const KEYPAD   = 0b0000_0001;
+        const CAPS_LOCK = 0b0000_0010;
+        const NUM_LOCK  = 0b0000_0100;
+        const NONE     = 0b0000_0000;
+    }
+}
+```
+
+Requires `KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES`.
+
+---
+
+## MouseEvent Struct
+
+```rust
+pub struct MouseEvent {
+    pub kind:      MouseEventKind,
+    pub column:    u16,
+    pub row:       u16,
+    pub modifiers: KeyModifiers,
+}
+```
+
+<ResponseField name="kind" type="MouseEventKind">
+  The type of mouse action that occurred.
+</ResponseField>
+<ResponseField name="column" type="u16">
+  Zero-indexed column where the event occurred.
+</ResponseField>
+<ResponseField name="row" type="u16">
+  Zero-indexed row where the event occurred.
+</ResponseField>
+<ResponseField name="modifiers" type="KeyModifiers">
+  Keyboard modifiers active when the mouse event occurred.
+</ResponseField>
+
+---
+
+## MouseEventKind Enum
+
+```rust
+pub enum MouseEventKind {
+    Down(MouseButton),
+    Up(MouseButton),
+    Drag(MouseButton),
+    Moved,
+    ScrollDown,
+    ScrollUp,
+    ScrollLeft,
+    ScrollRight,
+}
+```
+
+| Variant | Description |
+|---|---|
+| `Down(MouseButton)` | Button pressed |
+| `Up(MouseButton)` | Button released |
+| `Drag(MouseButton)` | Mouse moved while button held |
+| `Moved` | Mouse moved with no button held |
+| `ScrollDown` | Wheel scrolled toward user |
+| `ScrollUp` | Wheel scrolled away from user |
+| `ScrollLeft` | Wheel scrolled left (laptop touchpad) |
+| `ScrollRight` | Wheel scrolled right (laptop touchpad) |
+
+**Method:** `button() -> Option<MouseButton>` — returns the associated button for `Down`, `Up`, and `Drag` variants; `None` for others.
+
+Predicate methods: `is_down()`, `is_up()`, `is_drag()`, `is_moved()`, `is_scroll_down()`, `is_scroll_up()`, `is_scroll_left()`, `is_scroll_right()`.
+
+---
+
+## MouseButton Enum
+
+```rust
+pub enum MouseButton { Left, Right, Middle }
+```
+
+Predicate methods: `is_left()`, `is_right()`, `is_middle()`.
+
+<Note>
+  Some platforms do not report the button for `Up` and `Drag` events. `MouseButton::Left` is returned as a default in those cases.
+</Note>
+
+---
+
+## KeyboardEnhancementFlags
+
+```rust
+bitflags! {
+    pub struct KeyboardEnhancementFlags: u8 {
+        const DISAMBIGUATE_ESCAPE_CODES     = 0b0000_0001;
+        const REPORT_EVENT_TYPES            = 0b0000_0010;
+        const REPORT_ALTERNATE_KEYS         = 0b0000_0100;
+        const REPORT_ALL_KEYS_AS_ESCAPE_CODES = 0b0000_1000;
+    }
+}
+```
+
+Used with `PushKeyboardEnhancementFlags` to opt into the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/).
+
+| Flag | Description |
+|---|---|
+| `DISAMBIGUATE_ESCAPE_CODES` | Use CSI-u sequences for Escape and modified keys |
+| `REPORT_EVENT_TYPES` | Send `Repeat` and `Release` events |
+| `REPORT_ALTERNATE_KEYS` | Include alternate keycodes |
+| `REPORT_ALL_KEYS_AS_ESCAPE_CODES` | Encode all keys as CSI-u (needed for plain-text repeat/release) |
+
+Supported terminals: kitty, foot, WezTerm, Alacritty, notcurses, neovim, kakoune, dte.
+
+---
+
+## MediaKeyCode Enum
+
+```rust
+pub enum MediaKeyCode {
+    Play, Pause, PlayPause, Reverse, Stop,
+    FastForward, Rewind, TrackNext, TrackPrevious,
+    Record, LowerVolume, RaiseVolume, MuteVolume,
+}
+```
+
+Requires `KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES`.
+
+---
+
+## ModifierKeyCode Enum
+
+```rust
+pub enum ModifierKeyCode {
+    LeftShift, LeftControl, LeftAlt, LeftSuper, LeftHyper, LeftMeta,
+    RightShift, RightControl, RightAlt, RightSuper, RightHyper, RightMeta,
+    IsoLevel3Shift, IsoLevel5Shift,
+}
+```
+
+Requires both `DISAMBIGUATE_ESCAPE_CODES` and `REPORT_ALL_KEYS_AS_ESCAPE_CODES`.
+
+---
+
+## Commands
+
+All event commands implement the `Command` trait.
+
+<CardGroup cols={2}>
+  <Card title="EnableMouseCapture" icon="mouse-pointer">
+    Enables mouse event reporting. Enables normal tracking, button-event tracking, any-event tracking, RXVT mode, and SGR mode. Requires the `events` feature.
+  </Card>
+  <Card title="DisableMouseCapture" icon="mouse-pointer">
+    Disables all mouse event reporting modes enabled by `EnableMouseCapture`.
+  </Card>
+  <Card title="EnableFocusChange" icon="eye">
+    Enables focus gained/lost events. On Windows, focus events are always enabled.
+  </Card>
+  <Card title="DisableFocusChange" icon="eye-off">
+    Disables focus event emission. On Windows, this is a no-op.
+  </Card>
+  <Card title="EnableBracketedPaste" icon="clipboard">
+    Enables bracketed paste mode (requires the `bracketed-paste` feature). Not supported on legacy Windows API.
+  </Card>
+  <Card title="DisableBracketedPaste" icon="clipboard">
+    Disables bracketed paste mode (requires the `bracketed-paste` feature).
+  </Card>
+</CardGroup>
+
+#### `PushKeyboardEnhancementFlags`
+
+```rust
+pub struct PushKeyboardEnhancementFlags(pub KeyboardEnhancementFlags);
+```
+
+Pushes a set of keyboard enhancement flags onto the terminal's stack, enabling the Kitty keyboard protocol for the specified capabilities. Must be paired with `PopKeyboardEnhancementFlags`.
+
+<ParamField path="flags" type="KeyboardEnhancementFlags" required>
+  The enhancement flags to activate.
+</ParamField>
+
+<Warning>
+  Not supported on the legacy Windows API — returns `io::ErrorKind::Unsupported`.
+</Warning>
+
+---
+
+#### `PopKeyboardEnhancementFlags`
+
+```rust
+pub struct PopKeyboardEnhancementFlags;
+```
+
+Pops one level of keyboard enhancement flags, reverting to the previous state.
+
+---
+
+## EventStream
+
+```rust
+#[cfg(feature = "event-stream")]
+pub struct EventStream { /* … */ }
+```
+
+When the `event-stream` Cargo feature is enabled, `EventStream` provides an asynchronous `Stream<Item = io::Result<Event>>` suitable for use with `tokio`, `async-std`, or any executor that supports `futures`. It cannot be used on the same thread as `read()` / `poll()`.
+
+```rust
+use crossterm::event::{Event, EventStream, KeyCode};
+use futures::StreamExt;
+
+#[tokio::main]
+async fn main() {
+    let mut reader = EventStream::new();
+    while let Some(Ok(event)) = reader.next().await {
+        if let Event::Key(key) = event {
+            if key.code == KeyCode::Esc {
+                break;
+            }
+        }
+    }
+}
+```
+
+---
+
+## Full Example
+
+```rust
+use std::io::{self, Write};
+use std::time::Duration;
+
+use crossterm::{
+    event::{
+        DisableFocusChange, DisableMouseCapture,
+        EnableFocusChange, EnableMouseCapture,
+        Event, KeyCode, poll, read,
+    },
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
+
+fn main() -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnableMouseCapture, EnableFocusChange)?;
+
+    loop {
+        if poll(Duration::from_millis(500))? {
+            match read()? {
+                Event::Key(key) if key.code == KeyCode::Char('q') => break,
+                Event::Key(key) => println!("Key: {:?}\r", key),
+                Event::Mouse(mouse) => println!("Mouse: {:?}\r", mouse),
+                Event::FocusGained => println!("Focus gained\r"),
+                Event::FocusLost => println!("Focus lost\r"),
+                Event::Resize(w, h) => println!("Resize: {}×{}\r", w, h),
+                _ => {}
+            }
+        }
+    }
+
+    execute!(io::stdout(), DisableMouseCapture, DisableFocusChange)?;
+    disable_raw_mode()
+}
+```

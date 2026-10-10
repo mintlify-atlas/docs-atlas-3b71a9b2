@@ -1,0 +1,222 @@
+---
+title: "Crossterm Traits: Command, Execute, Queue, and Sync"
+sidebarTitle: "Traits"
+description: "Reference for the four core crossterm traits that define the command execution model for terminal manipulation."
+---
+
+Crossterm's execution model is built on four public traits. `Command` is the unit of work — any struct that implements it can describe a terminal action as an ANSI escape sequence. The other three traits — `QueueableCommand`, `ExecutableCommand`, and `SynchronizedUpdate` — are blanket-implemented for every type that implements `std::io::Write`, so you get their methods for free on `stdout`, `stderr`, or any custom buffer the moment you bring the traits into scope.
+
+---
+
+## `Command` trait
+
+```rust
+pub trait Command {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result;
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()>;
+
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        // delegates to crossterm::ansi_support::supports_ansi()
+    }
+}
+```
+
+`Command` is the lowest-level trait in crossterm. Every built-in command (e.g. `MoveTo`, `SetForegroundColor`, `Clear`) implements it. You only need to implement `Command` yourself if you want to create a custom terminal action that integrates with the rest of the Command API.
+
+### Methods
+
+<ParamField path="write_ansi" type="fn(&self, f: &mut impl fmt::Write) -> fmt::Result">
+  Writes the ANSI escape sequence that performs this command into the given `fmt::Write` sink.  
+  On UNIX and Windows 10+ this is the primary execution path — crossterm writes the resulting bytes to the underlying `io::Write` writer.
+</ParamField>
+
+<ParamField path="execute_winapi" type="fn(&self) -> io::Result<()>" >
+  **Windows only.** Called when the running Windows version does not support ANSI escape codes (versions earlier than Windows 10). Makes a direct WinAPI call to perform the equivalent terminal action.
+</ParamField>
+
+<ParamField path="is_ansi_code_supported" type="fn(&self) -> bool">
+  **Windows only.** Returns whether the current terminal supports ANSI escape codes. The default implementation delegates to `crossterm::ansi_support::supports_ansi()`. Override only if you need custom detection logic for a specialized command.
+</ParamField>
+
+### When to implement `Command`
+
+Implement `Command` when you want a reusable, composable terminal action that works with `queue!`, `execute!`, `.queue()`, and `.execute()` just like any built-in command. A typical use case is wrapping a sequence of ANSI escape codes that crossterm does not expose as a first-class command.
+
+### Example: minimal custom command
+
+```rust
+use std::fmt;
+use crossterm::Command;
+
+/// A command that rings the terminal bell.
+struct Bell;
+
+impl Command for Bell {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        // BEL control character
+        f.write_str("\x07")
+    }
+
+    // On Windows versions without ANSI support you would add:
+    // #[cfg(windows)]
+    // fn execute_winapi(&self) -> std::io::Result<()> {
+    //     // WinAPI equivalent, or just Ok(()) to silently skip
+    //     Ok(())
+    // }
+}
+
+fn main() -> std::io::Result<()> {
+    use crossterm::ExecutableCommand;
+    std::io::stdout().execute(Bell)?;
+    Ok(())
+}
+```
+
+---
+
+## `QueueableCommand` trait
+
+```rust
+pub trait QueueableCommand {
+    fn queue(&mut self, command: impl Command) -> io::Result<&mut Self>;
+}
+```
+
+`QueueableCommand` is blanket-implemented for every `T: Write`. Calling `.queue()` writes the command's ANSI bytes into the writer's buffer but **does not flush**. This makes it ideal for tight loops or any situation where you want to accumulate many commands and pay the cost of a single system call at flush time.
+
+### Method
+
+<ParamField path="queue" type="fn(&mut self, command: impl Command) -> io::Result<&mut Self>">
+  Writes the ANSI representation of `command` into `self`. Does not flush.  
+  Returns `io::Result<&mut Self>` so calls can be chained.
+
+  Queued commands will be sent to the terminal in the following cases:
+  - `Write::flush()` is called manually.
+  - The internal write buffer becomes full.
+  - On line-buffered writers such as `stdout`, each newline triggers a flush.
+
+  **Windows note:** On Windows versions that do not support ANSI codes, `.queue()` behaves identically to `.execute()` — the WinAPI call is made immediately so command ordering is preserved.
+</ParamField>
+
+### Example
+
+```rust
+use std::io::{self, Write};
+use crossterm::{QueueableCommand, style::Print};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Commands are buffered — nothing is sent to the terminal yet.
+    stdout
+        .queue(Print("foo 1\n".to_string()))?
+        .queue(Print("foo 2\n".to_string()))?;
+
+    // All buffered commands are flushed in one go.
+    stdout.flush()?;
+
+    Ok(())
+}
+```
+
+---
+
+## `ExecutableCommand` trait
+
+```rust
+pub trait ExecutableCommand {
+    fn execute(&mut self, command: impl Command) -> io::Result<&mut Self>;
+}
+```
+
+`ExecutableCommand` is blanket-implemented for every `T: Write`. Calling `.execute()` writes the command's ANSI bytes **and immediately flushes** the writer. This is the right choice when you are sending only a few commands at a time and the overhead of an extra flush call is negligible.
+
+### Method
+
+<ParamField path="execute" type="fn(&mut self, command: impl Command) -> io::Result<&mut Self>">
+  Queues `command` via `.queue()`, then calls `Write::flush()`.  
+  Returns `io::Result<&mut Self>` so calls can be chained.
+
+  **Windows note:** On Windows versions that do not support ANSI codes, the WinAPI call is already made synchronously inside `.queue()`, so the subsequent flush is a no-op from the terminal's perspective.
+</ParamField>
+
+### Example
+
+```rust
+use std::io;
+use crossterm::{ExecutableCommand, style::Print};
+
+fn main() -> io::Result<()> {
+    // Each call writes and flushes immediately.
+    io::stdout()
+        .execute(Print("sum:\n".to_string()))?
+        .execute(Print(format!("1 + 1 = {}\n", 1 + 1)))?;
+
+    Ok(())
+}
+```
+
+<Tip>
+  If you are updating the terminal at high frequency — for example, re-drawing a TUI on every input event — prefer `QueueableCommand` (or the `queue!` macro) to accumulate all updates, then flush once per frame. This significantly reduces the number of write syscalls.
+</Tip>
+
+---
+
+## `SynchronizedUpdate` trait
+
+```rust
+pub trait SynchronizedUpdate {
+    fn sync_update<T>(
+        &mut self,
+        operations: impl FnOnce(&mut Self) -> T,
+    ) -> io::Result<T>;
+}
+```
+
+`SynchronizedUpdate` is blanket-implemented for every `W: Write`. It wraps a closure's worth of terminal operations between `BeginSynchronizedUpdate` and `EndSynchronizedUpdate` commands, which instruct supporting terminal emulators to suspend screen rendering until the entire batch is ready. This eliminates the visual tearing that can occur when a fast-updating application writes a partial frame before the emulator has a chance to render it.
+
+### Method
+
+<ParamField path="sync_update" type="fn(&mut self, operations: impl FnOnce(&mut Self) -> T) -> io::Result<T>">
+  1. Queues `BeginSynchronizedUpdate` on `self`.
+  2. Calls `operations(self)` and captures its return value.
+  3. Executes `EndSynchronizedUpdate` (which also flushes `self`).
+  4. Returns `io::Result<T>` where `T` is whatever the closure returned.
+
+  The closure receives `&mut Self` so it can use `.queue()`, `.execute()`, or any other method on the writer.
+</ParamField>
+
+<Note>
+  `SynchronizedUpdate` relies on ANSI escape sequences (`BeginSynchronizedUpdate` / `EndSynchronizedUpdate`). On terminals that do not support these sequences the commands are silently ignored, and the closure still runs normally — your output will appear correctly, just without the tearing-prevention guarantee.
+</Note>
+
+### Example
+
+```rust
+use crossterm::{ExecutableCommand, SynchronizedUpdate, style::Print};
+use std::io;
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    stdout.sync_update(|stdout| {
+        // These writes are buffered inside the synchronized update window.
+        // The terminal emulator will not render any of them until
+        // EndSynchronizedUpdate is sent.
+        stdout.execute(Print("foo 1\n".to_string()))?;
+        stdout.execute(Print("foo 2\n".to_string()))?;
+        io::Result::Ok(())
+    })?;
+
+    // At this point the terminal emulator atomically renders both lines.
+
+    Ok(())
+}
+```
+
+### When to use `SynchronizedUpdate`
+
+Use `sync_update` in applications that redraw large portions of the screen on every tick, such as full-screen TUI editors or dashboards. Without synchronized updates, the emulator may render an intermediate state mid-redraw, causing flickering or visible partial frames. Wrapping each full redraw cycle in `sync_update` ensures the emulator only presents complete frames.

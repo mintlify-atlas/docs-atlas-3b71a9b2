@@ -1,0 +1,531 @@
+---
+title: "Reading Terminal Events: Keyboard, Mouse, and Resize"
+sidebarTitle: "Events"
+description: "how to read keyboard, mouse, focus, resize, and paste events using crossterm's event system."
+---
+
+crossterm's event system gives you a unified, cross-platform way to react to everything that happens in the terminal: keystrokes, mouse movements and clicks, window focus changes, terminal resize, and even bracketed paste. All events flow through a single `Event` enum, and two complementary functions — `read()` for blocking reads and `poll()` for timed checks — let you integrate event handling into any application loop.
+
+<Note>
+Raw mode must be enabled for keyboard events to work correctly. Without it, the terminal driver buffers and processes input before your application sees it. Call `terminal::enable_raw_mode()` before entering your event loop, and remember to call `terminal::disable_raw_mode()` before your program exits. See the [Terminal guide](/guides/terminal) for details.
+</Note>
+
+## Reading events
+
+crossterm provides three functions for consuming events from the terminal. They share the same internal queue, so choose whichever model fits your architecture — but **do not mix `read()`/`poll()` with `EventStream` across threads** (see the [thread safety note](#thread-safety) below).
+
+### `read()` — blocking
+
+`read()` blocks the calling thread until an `Event` is available, then returns it immediately.
+
+```rust
+use crossterm::event::{read, Event};
+use std::io;
+
+fn print_events() -> io::Result<()> {
+    loop {
+        // Blocks until an event arrives
+        match read()? {
+            Event::FocusGained => println!("FocusGained\r"),
+            Event::FocusLost   => println!("FocusLost\r"),
+            Event::Key(event)  => println!("{:?}\r", event),
+            Event::Mouse(event)=> println!("{:?}\r", event),
+            Event::Resize(w, h)=> println!("Resize {}x{}\r", w, h),
+            #[cfg(feature = "bracketed-paste")]
+            Event::Paste(data) => println!("Pasted {:?}\r", data),
+        }
+    }
+}
+```
+
+### `poll(Duration)` — timed check
+
+`poll()` waits up to the given duration for an event to become available, returning `Ok(true)` if one is ready (so a subsequent `read()` call is guaranteed not to block) or `Ok(false)` on timeout. Pass `Duration::from_secs(0)` to check without waiting at all.
+
+```rust
+use crossterm::event::{poll, read, Event, KeyCode};
+use std::{io, time::Duration};
+
+fn print_events() -> io::Result<()> {
+    loop {
+        // Wait up to 1 second for an event
+        if poll(Duration::from_millis(1_000))? {
+            // read() won't block because poll() returned true
+            let event = read()?;
+            println!("Event::{:?}\r", event);
+
+            if event == Event::Key(KeyCode::Esc.into()) {
+                break;
+            }
+        } else {
+            // Timeout — no event arrived during this 1 s window
+            println!(".\r");
+        }
+    }
+    Ok(())
+}
+```
+
+### `try_read()` — non-blocking
+
+`try_read()` returns `Option<Event>`. It never blocks: if no event is queued it immediately returns `None`. This is useful for draining all pending events in a single pass after `poll()` confirms that at least one is available.
+
+```rust
+use crossterm::event::{poll, try_read};
+use std::{io, time::Duration};
+
+fn drain_events() -> io::Result<()> {
+    loop {
+        if poll(Duration::from_millis(100))? {
+            // Consume every queued event without blocking
+            while let Some(event) = try_read() {
+                println!("{:?}\r", event);
+            }
+        }
+    }
+}
+```
+
+<CodeGroup>
+```rust Blocking read (event-read.rs)
+use std::io;
+use crossterm::{
+    cursor::position,
+    event::{
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture,
+        EnableBracketedPaste, EnableFocusChange, EnableMouseCapture,
+        Event, KeyCode, read,
+    },
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
+
+fn print_events() -> io::Result<()> {
+    loop {
+        let event = read()?;
+        println!("Event: {event:?}\r");
+
+        if event == Event::Key(KeyCode::Char('c').into()) {
+            println!("Cursor position: {:?}\r", position());
+        }
+        if event == Event::Key(KeyCode::Esc.into()) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+
+    execute!(stdout, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture)?;
+    if let Err(e) = print_events() {
+        println!("Error: {e:?}\r");
+    }
+    execute!(stdout, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture)?;
+    disable_raw_mode()
+}
+```
+```rust Poll + read (event-poll-read.rs)
+use std::{io, time::Duration};
+use crossterm::{
+    cursor::position,
+    event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, poll, read},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
+
+fn print_events() -> io::Result<()> {
+    loop {
+        if poll(Duration::from_millis(1_000))? {
+            let event = read()?;
+            println!("Event::{event:?}\r");
+
+            if event == Event::Key(KeyCode::Char('c').into()) {
+                println!("Cursor position: {:?}\r", position());
+            }
+            if event == Event::Key(KeyCode::Esc.into()) {
+                break;
+            }
+        } else {
+            println!(".\r"); // timeout, no event
+        }
+    }
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnableMouseCapture)?;
+    if let Err(e) = print_events() {
+        println!("Error: {e:?}\r");
+    }
+    execute!(stdout, DisableMouseCapture)?;
+    disable_raw_mode()
+}
+```
+</CodeGroup>
+
+## The `Event` enum
+
+Every input source produces a variant of the same `Event` enum:
+
+| Variant | Description |
+|---|---|
+| `Event::Key(KeyEvent)` | A keyboard input event (press, release, or repeat). |
+| `Event::Mouse(MouseEvent)` | A mouse button, movement, or scroll event. |
+| `Event::FocusGained` | The terminal window gained focus. |
+| `Event::FocusLost` | The terminal window lost focus. |
+| `Event::Resize(u16, u16)` | The terminal was resized; payload is `(columns, rows)`. |
+| `Event::Paste(String)` | Text was pasted (requires `bracketed-paste` feature). |
+
+### Helper methods on `Event`
+
+Instead of a full `match`, use the convenience predicates and extractors:
+
+```rust
+use crossterm::event::{read, Event};
+
+let event = read()?;
+
+// Predicates
+event.is_key();           // true for any Key(_) event
+event.is_key_press();     // true only for KeyEventKind::Press
+event.is_key_release();   // true only for KeyEventKind::Release
+event.is_key_repeat();    // true only for KeyEventKind::Repeat
+event.is_mouse();
+event.is_resize();
+event.is_focus_gained();
+event.is_focus_lost();
+#[cfg(feature = "bracketed-paste")]
+event.is_paste();
+
+// Extractors — return Option<...>
+event.as_key_event();           // Option<KeyEvent>  (any kind)
+event.as_key_press_event();     // Option<KeyEvent>  (press only)
+event.as_key_release_event();   // Option<KeyEvent>  (release only)
+event.as_key_repeat_event();    // Option<KeyEvent>  (repeat only)
+event.as_mouse_event();         // Option<MouseEvent>
+event.as_resize_event();        // Option<(u16, u16)>
+#[cfg(feature = "bracketed-paste")]
+event.as_paste_event();         // Option<&str>
+```
+
+Resize events can arrive in rapid batches when the user is dragging a window edge. The example below shows the recommended flush pattern:
+
+```rust
+use crossterm::event::{poll, read, Event};
+use std::time::Duration;
+
+fn flush_resize_events(first: (u16, u16)) -> ((u16, u16), (u16, u16)) {
+    let mut last = first;
+    while let Ok(true) = poll(Duration::from_millis(50)) {
+        if let Ok(Event::Resize(x, y)) = read() {
+            last = (x, y);
+        }
+    }
+    (first, last)
+}
+```
+
+## `KeyEvent`
+
+A `KeyEvent` carries four fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `code` | `KeyCode` | Which key was pressed/released. |
+| `modifiers` | `KeyModifiers` | Shift, Ctrl, Alt, etc. active at event time. |
+| `kind` | `KeyEventKind` | `Press`, `Repeat`, or `Release`. |
+| `state` | `KeyEventState` | Extra state flags (keypad, CapsLock, NumLock). |
+
+On Unix, `kind` is always `Press` unless you enable `REPORT_EVENT_TYPES` via the Kitty protocol. On Windows, `kind` is always reported.
+
+### Reading a single character or a line
+
+```rust
+use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind};
+use std::io;
+
+pub fn read_char() -> io::Result<char> {
+    loop {
+        if let Event::Key(KeyEvent {
+            code: KeyCode::Char(c),
+            kind: KeyEventKind::Press,
+            ..
+        }) = read()?
+        {
+            return Ok(c);
+        }
+    }
+}
+
+pub fn read_line() -> io::Result<String> {
+    let mut line = String::new();
+    loop {
+        if let Event::Key(KeyEvent {
+            code,
+            kind: KeyEventKind::Press,
+            ..
+        }) = read()?
+        {
+            match code {
+                KeyCode::Enter      => break,
+                KeyCode::Char(c)    => line.push(c),
+                _                   => {}
+            }
+        }
+    }
+    Ok(line)
+}
+```
+
+### `KeyCode` variants
+
+| Variant | Notes |
+|---|---|
+| `Char(char)` | A printable character, e.g. `KeyCode::Char('a')`. |
+| `F(u8)` | Function key, e.g. `KeyCode::F(1)` for F1. |
+| `Enter` | Enter / Return. |
+| `Esc` | Escape. |
+| `Backspace` | Backspace (Delete on macOS). |
+| `Delete` | Forward-delete (Fn+Delete on macOS). |
+| `Left` / `Right` / `Up` / `Down` | Arrow keys. |
+| `Home` / `End` | Line-navigation keys. |
+| `PageUp` / `PageDown` | Page navigation. |
+| `Insert` | Insert key. |
+| `Tab` | Tab key. |
+| `BackTab` | Shift+Tab. |
+| `Null` | Null byte received. |
+| `CapsLock` | Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `ScrollLock` | Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `NumLock` | Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `PrintScreen` | Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `Pause` | Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `Menu` | Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `KeypadBegin` | Keypad 5 (with NumLock off). Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `Media(MediaKeyCode)` | Play, Pause, Stop, volume, etc. Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `Modifier(ModifierKeyCode)` | Standalone modifier key. Requires both `DISAMBIGUATE_ESCAPE_CODES` and `REPORT_ALL_KEYS_AS_ESCAPE_CODES`. |
+
+`KeyCode` also exposes focused helpers:
+- `is_char(c: char) -> bool` — true if the code is `Char(c)`.
+- `as_char() -> Option<char>` — extracts the character if present.
+- `is_function_key(n: u8) -> bool` — true if the code is `F(n)`.
+- `is_media_key(MediaKeyCode) -> bool`
+- `is_modifier(ModifierKeyCode) -> bool`
+
+### `KeyModifiers` flags
+
+```rust
+use crossterm::event::KeyModifiers;
+
+// Combine flags with `|`
+let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+```
+
+| Flag | Notes |
+|---|---|
+| `SHIFT` | Shift key. |
+| `CONTROL` | Control key. |
+| `ALT` | Alt key (Option on macOS). |
+| `SUPER` | Super key (Command/Windows). Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `HYPER` | Hyper key. Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `META` | Meta key. Requires `DISAMBIGUATE_ESCAPE_CODES`. |
+| `NONE` | No modifiers. |
+
+### `KeyEventKind`
+
+| Variant | Description |
+|---|---|
+| `Press` | Key was pressed (always available). |
+| `Repeat` | Key is auto-repeating (requires `REPORT_EVENT_TYPES` on Unix). |
+| `Release` | Key was released (requires `REPORT_EVENT_TYPES` on Unix). |
+
+Convenience methods: `kind.is_press()`, `kind.is_repeat()`, `kind.is_release()`.
+
+## Mouse events
+
+Mouse capturing is **disabled by default**. Enable it with the `EnableMouseCapture` command and disable it with `DisableMouseCapture`.
+
+```rust
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture, Event, MouseEvent, MouseEventKind, read},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
+use std::io;
+
+fn main() -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnableMouseCapture)?;
+
+    loop {
+        if let Ok(Event::Mouse(MouseEvent { kind, column, row, modifiers })) = read() {
+            println!("Mouse {:?} at ({column}, {row}) mods={modifiers:?}\r", kind);
+        }
+    }
+    // cleanup (reached when loop exits)
+    // execute!(io::stdout(), DisableMouseCapture)?;
+    // disable_raw_mode()
+}
+```
+
+### `MouseEvent` fields
+
+| Field | Type | Description |
+|---|---|---|
+| `kind` | `MouseEventKind` | What happened (click, drag, scroll, …). |
+| `column` | `u16` | Zero-based column where the event occurred. |
+| `row` | `u16` | Zero-based row where the event occurred. |
+| `modifiers` | `KeyModifiers` | Keyboard modifiers held at the time. |
+
+### `MouseEventKind` variants
+
+| Variant | Description |
+|---|---|
+| `Down(MouseButton)` | A mouse button was pressed. |
+| `Up(MouseButton)` | A mouse button was released. |
+| `Drag(MouseButton)` | The cursor was moved while a button was held. |
+| `Moved` | The cursor was moved with no button held. |
+| `ScrollDown` | Mouse wheel scrolled down (toward the user). |
+| `ScrollUp` | Mouse wheel scrolled up (away from the user). |
+| `ScrollLeft` | Mouse wheel scrolled left (common on laptop touchpads). |
+| `ScrollRight` | Mouse wheel scrolled right (common on laptop touchpads). |
+
+`MouseEventKind::button() -> Option<MouseButton>` returns the associated button for `Down`, `Up`, and `Drag`, and `None` otherwise.
+
+### `MouseButton`
+
+`Left`, `Right`, `Middle` — with helpers `is_left()`, `is_right()`, `is_middle()`.
+
+<Note>
+Some platforms and terminals do not report the mouse button for `Up` and `Drag` events. In those cases crossterm falls back to `MouseButton::Left`. On macOS, Ctrl+left-click may be reported as a right-click.
+</Note>
+
+## Focus events
+
+Focus events are also opt-in. Use `EnableFocusChange` / `DisableFocusChange`:
+
+```rust
+use crossterm::{
+    event::{DisableFocusChange, EnableFocusChange, Event, read},
+    execute,
+};
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(io::stdout(), EnableFocusChange)?;
+
+    loop {
+        match read()? {
+            Event::FocusGained => println!("Terminal gained focus\r"),
+            Event::FocusLost   => println!("Terminal lost focus\r"),
+            _ => {}
+        }
+    }
+    // execute!(io::stdout(), DisableFocusChange)?;
+}
+```
+
+<Note>
+On Windows, focus events are always enabled and cannot be disabled via the legacy console API.
+</Note>
+
+## Bracketed paste
+
+When bracketed paste is enabled the terminal wraps clipboard pastes so that crossterm can deliver them as a single `Event::Paste(String)` rather than a stream of individual `Char` key events.
+
+This feature requires the `bracketed-paste` Cargo feature and is **not supported** on older Windows consoles that lack virtual terminal sequences.
+
+```toml
+# Cargo.toml
+[dependencies]
+crossterm = { version = "...", features = ["bracketed-paste"] }
+```
+
+```rust
+#[cfg(feature = "bracketed-paste")]
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, Event, read};
+use crossterm::execute;
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(io::stdout(), EnableBracketedPaste)?;
+
+    loop {
+        if let Event::Paste(text) = read()? {
+            println!("Pasted {} bytes\r", text.len());
+        }
+    }
+    // execute!(io::stdout(), DisableBracketedPaste)?;
+}
+```
+
+## Kitty keyboard enhancement protocol
+
+The [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) extends the standard terminal keyboard encoding to remove ambiguity and add release/repeat events. crossterm exposes it through `PushKeyboardEnhancementFlags` and `PopKeyboardEnhancementFlags`. Always check `terminal::supports_keyboard_enhancement()` first — the protocol is only available on a subset of terminals.
+
+**Supported terminals:** kitty, foot, WezTerm, Alacritty, and others that implement the protocol.
+
+```rust
+use crossterm::{
+    event::{
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
+    },
+    execute, queue,
+    terminal::{disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement},
+};
+use std::io;
+
+fn main() -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+
+    let enhanced = matches!(supports_keyboard_enhancement(), Ok(true));
+
+    if enhanced {
+        queue!(
+            stdout,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        )?;
+    }
+
+    // ... your event loop ...
+
+    if enhanced {
+        queue!(stdout, PopKeyboardEnhancementFlags)?;
+    }
+    disable_raw_mode()
+}
+```
+
+### `KeyboardEnhancementFlags`
+
+| Flag | Effect |
+|---|---|
+| `DISAMBIGUATE_ESCAPE_CODES` | Encodes Escape and modified keys as unambiguous CSI-u sequences. Unlocks `CapsLock`, `ScrollLock`, `NumLock`, `PrintScreen`, `Pause`, `Menu`, `Media`, `SUPER`, `HYPER`, and `META`. |
+| `REPORT_EVENT_TYPES` | Adds `KeyEventKind::Repeat` and `KeyEventKind::Release` events. |
+| `REPORT_ALTERNATE_KEYS` | Sends alternate keycodes alongside base keycodes. |
+| `REPORT_ALL_KEYS_AS_ESCAPE_CODES` | Encodes all keys as CSI-u sequences, required for repeat/release on plain text keys. Also unlocks `Modifier(ModifierKeyCode)` events when combined with `DISAMBIGUATE_ESCAPE_CODES`. |
+
+<Warning>
+The Kitty protocol is not supported in the legacy Windows console API. `PushKeyboardEnhancementFlags` will return an `Unsupported` error on those systems.
+</Warning>
+
+## Thread safety
+
+`read()`, `poll()`, and `try_read()` share a single internal event queue. The rules are:
+
+- You **may** call `read()` / `poll()` / `try_read()` from any single thread — but all calls must come from the **same** thread.
+- You **may** use `EventStream` (the async adapter, requires the `event-stream` feature) instead.
+- You **must not** mix `read()`/`poll()` calls with `EventStream` in the same program.
+
+Violating these rules will produce undefined or deadlocked behaviour.

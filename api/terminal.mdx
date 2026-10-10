@@ -1,0 +1,373 @@
+---
+title: "terminal Module API Reference — Crossterm"
+sidebarTitle: "terminal"
+description: "API reference for the crossterm terminal module — raw mode, alternate screen, WindowSize, Clear, ScrollUp, SetTitle, and synchronized updates."
+---
+
+The `terminal` module provides control over the terminal as a whole: enabling raw mode so that input is delivered byte-by-byte without line buffering, switching between the main and alternate screen buffers, querying and setting the terminal dimensions, clearing regions of the screen, scrolling, and setting the window title. Most operations are exposed as *commands* dispatched through `execute!` or `queue!`, while raw mode and size queries are free functions for convenience.
+
+---
+
+## Functions
+
+### `enable_raw_mode`
+
+```rust
+pub fn enable_raw_mode() -> io::Result<()>
+```
+
+Switches the terminal into raw mode. In raw mode:
+
+- Input is **not** forwarded to the screen.
+- Input is **not** processed on Enter — data is sent byte-by-byte.
+- Special keys such as Backspace and Ctrl+C are **not** interpreted by the terminal driver.
+- Newlines (`\n`) do **not** move to column 0 — use `\r\n` or `write!` / `queue!` instead of `println!`.
+
+Calling `enable_raw_mode()` more than once without an intervening `disable_raw_mode()` is safe — it is idempotent.
+
+---
+
+### `disable_raw_mode`
+
+```rust
+pub fn disable_raw_mode() -> io::Result<()>
+```
+
+Restores the terminal to cooked (normal) mode. Should always be called when your program exits, even on error — consider pairing with a guard type or `defer`.
+
+---
+
+### `is_raw_mode_enabled`
+
+```rust
+pub fn is_raw_mode_enabled() -> io::Result<bool>
+```
+
+Returns `true` if raw mode is currently active, `false` otherwise. On Unix, this reflects the internal tracking state rather than querying the underlying TTY directly.
+
+---
+
+### `size`
+
+```rust
+pub fn size() -> io::Result<(u16, u16)>
+```
+
+Returns the current terminal size as `(columns, rows)`. The top-left cell is position `(1, 1)` internally, but cursor commands use 0-based addressing — there is no off-by-one issue when using this with `MoveTo`.
+
+---
+
+### `window_size`
+
+```rust
+pub fn window_size() -> io::Result<WindowSize>
+```
+
+Returns extended terminal size information as a `WindowSize` struct, including pixel dimensions when available.
+
+<Note>
+  Pixel dimensions (`width` and `height`) may not be reliably reported. On Linux they are documented as "unused" by `tty_ioctl(4)`. On Windows, pixel dimensions are not implemented and will be 0.
+</Note>
+
+---
+
+### `supports_keyboard_enhancement`
+
+```rust
+#[cfg(feature = "events")]
+pub fn supports_keyboard_enhancement() -> io::Result<bool>
+```
+
+Returns `true` if the terminal supports the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) (progressive keyboard enhancement). Only available with the `events` Cargo feature.
+
+---
+
+## WindowSize Struct
+
+```rust
+pub struct WindowSize {
+    pub rows:    u16,
+    pub columns: u16,
+    pub width:   u16,   // terminal width in pixels
+    pub height:  u16,   // terminal height in pixels
+}
+```
+
+<ResponseField name="rows" type="u16">
+  Terminal height in character cells.
+</ResponseField>
+<ResponseField name="columns" type="u16">
+  Terminal width in character cells.
+</ResponseField>
+<ResponseField name="width" type="u16">
+  Terminal width in pixels. May be `0` if not reported by the OS.
+</ResponseField>
+<ResponseField name="height" type="u16">
+  Terminal height in pixels. May be `0` if not reported by the OS.
+</ResponseField>
+
+---
+
+## Commands
+
+All terminal commands implement the `Command` trait. Use them with `execute!` or `queue!`.
+
+### Alternate Screen
+
+#### `EnterAlternateScreen`
+
+```rust
+pub struct EnterAlternateScreen;
+```
+
+Switches from the main screen to the alternate screen. The alternate screen has the exact terminal dimensions with no scrollback buffer. The main screen's content is preserved and restored when you call `LeaveAlternateScreen`.
+
+<Tip>
+  This is the correct way to implement full-screen TUI applications. Enter on startup, do all rendering in the alternate screen, and leave on exit — just like Vim or `less`.
+</Tip>
+
+---
+
+#### `LeaveAlternateScreen`
+
+```rust
+pub struct LeaveAlternateScreen;
+```
+
+Returns to the main screen, restoring its previous content. Always pair with `EnterAlternateScreen`.
+
+---
+
+#### `EnableAlternateScrollMode`
+
+```rust
+pub struct EnableAlternateScrollMode;
+```
+
+When on the alternate screen, redirects scroll wheel / touchpad events to cursor-up / cursor-down key events instead of scrolling the normal scrollback buffer. See the [xterm documentation](https://invisible-island.net/xterm/manpage/xterm.html#VT100-Widget-Resources:alternateScroll) for details.
+
+<Warning>
+  Not supported on Windows — executing this command via the legacy Windows API returns `io::ErrorKind::Unsupported`.
+</Warning>
+
+---
+
+#### `DisableAlternateScrollMode`
+
+```rust
+pub struct DisableAlternateScrollMode;
+```
+
+Disables the alternate scroll mode enabled by `EnableAlternateScrollMode`. Not supported on Windows.
+
+---
+
+### Clearing the Screen
+
+#### `Clear`
+
+```rust
+pub struct Clear(pub ClearType);
+```
+
+Clears a region of the terminal buffer according to the `ClearType` variant.
+
+<ParamField path="clear_type" type="ClearType" required>
+  Determines which cells are erased.
+</ParamField>
+
+**`ClearType` Enum:**
+
+```rust
+pub enum ClearType {
+    All,
+    Purge,
+    FromCursorDown,
+    FromCursorUp,
+    CurrentLine,
+    UntilNewLine,
+}
+```
+
+| Variant | Description |
+|---|---|
+| `All` | Clears the entire visible screen buffer |
+| `Purge` | Clears the entire screen buffer **plus** scrollback history |
+| `FromCursorDown` | Clears from the cursor position to the end of the screen |
+| `FromCursorUp` | Clears from the beginning of the screen to the cursor position |
+| `CurrentLine` | Clears all cells on the cursor's current row |
+| `UntilNewLine` | Clears from the cursor to the end of the current line |
+
+---
+
+### Scrolling
+
+#### `ScrollUp`
+
+```rust
+pub struct ScrollUp(pub u16);
+```
+
+Scrolls the terminal screen up by `n` rows. New blank rows appear at the bottom.
+
+<ParamField path="n" type="u16" required>
+  Number of rows to scroll up. A value of `0` is a no-op.
+</ParamField>
+
+---
+
+#### `ScrollDown`
+
+```rust
+pub struct ScrollDown(pub u16);
+```
+
+Scrolls the terminal screen down by `n` rows. New blank rows appear at the top.
+
+<ParamField path="n" type="u16" required>
+  Number of rows to scroll down. A value of `0` is a no-op.
+</ParamField>
+
+---
+
+### Terminal Size & Title
+
+#### `SetSize`
+
+```rust
+pub struct SetSize(pub u16, pub u16);
+```
+
+Requests the terminal to resize to the given number of columns and rows. The first field is `columns`, the second is `rows`.
+
+<ParamField path="cols" type="u16" required>
+  Desired terminal width in character columns.
+</ParamField>
+<ParamField path="rows" type="u16" required>
+  Desired terminal height in character rows.
+</ParamField>
+
+<Note>
+  Whether the terminal actually resizes depends on the terminal emulator. Always save the original size and restore it when done.
+</Note>
+
+---
+
+#### `SetTitle`
+
+```rust
+pub struct SetTitle<T>(pub T);
+// where T: fmt::Display
+```
+
+Sets the terminal window title. Accepts any type that implements `Display`.
+
+<ParamField path="title" type="T: Display" required>
+  The text to display in the terminal window's title bar.
+</ParamField>
+
+```rust
+execute!(io::stdout(), SetTitle("My TUI App"))?;
+```
+
+---
+
+### Line Wrap
+
+#### `EnableLineWrap`
+
+```rust
+pub struct EnableLineWrap;
+```
+
+Re-enables automatic line wrapping. When line wrap is on, text that reaches the right edge of the terminal automatically continues on the next line.
+
+---
+
+#### `DisableLineWrap`
+
+```rust
+pub struct DisableLineWrap;
+```
+
+Disables automatic line wrapping. Text that extends past the right edge is truncated or overflows depending on the terminal.
+
+---
+
+### Synchronized Update
+
+#### `BeginSynchronizedUpdate`
+
+```rust
+pub struct BeginSynchronizedUpdate;
+```
+
+Signals the terminal emulator to begin a synchronized rendering frame. While in this mode, the emulator continues processing incoming sequences but defers screen repaints until `EndSynchronizedUpdate` is received. This prevents tearing when many cells are updated in rapid succession.
+
+---
+
+#### `EndSynchronizedUpdate`
+
+```rust
+pub struct EndSynchronizedUpdate;
+```
+
+Ends a synchronized rendering frame begun with `BeginSynchronizedUpdate`, allowing the terminal to paint the latest buffer state.
+
+---
+
+## Code Example
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute, queue,
+    terminal::{
+        BeginSynchronizedUpdate, Clear, ClearType,
+        DisableLineWrap, EnableLineWrap,
+        EnterAlternateScreen, EndSynchronizedUpdate, LeaveAlternateScreen,
+        ScrollUp, SetSize, SetTitle, disable_raw_mode, enable_raw_mode, size,
+    },
+};
+
+fn main() -> io::Result<()> {
+    // Save terminal dimensions for cleanup
+    let (original_cols, original_rows) = size()?;
+
+    enable_raw_mode()?;
+
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        SetTitle("My Crossterm App"),
+        DisableLineWrap,
+    )?;
+
+    // Render a frame using synchronized update to prevent tearing
+    {
+        let mut stdout = io::stdout();
+        queue!(stdout, BeginSynchronizedUpdate)?;
+        queue!(stdout, Clear(ClearType::All))?;
+        // ... write content ...
+        queue!(stdout, EndSynchronizedUpdate)?;
+        stdout.flush()?;
+    }
+
+    // Scroll the content up 3 lines
+    execute!(io::stdout(), ScrollUp(3))?;
+
+    // Cleanup
+    execute!(
+        io::stdout(),
+        EnableLineWrap,
+        LeaveAlternateScreen,
+        SetSize(original_cols, original_rows),
+    )?;
+    disable_raw_mode()
+}
+```
+
+<Tip>
+  Always restore `EnableLineWrap` and call `LeaveAlternateScreen` on exit — even when handling errors. Consider wrapping setup/teardown in a RAII guard or registering a panic hook.
+</Tip>

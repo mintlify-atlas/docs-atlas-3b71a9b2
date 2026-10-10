@@ -1,0 +1,97 @@
+---
+title: "Installing Crossterm in Your Rust Project"
+sidebarTitle: "Installation"
+description: "Learn how to add crossterm as a Cargo dependency and configure feature flags for your project's needs."
+---
+
+Adding crossterm to a Rust project is a single line in your `Cargo.toml`. Crossterm is published on [crates.io](https://crates.io/crates/crossterm) and has full API documentation on [docs.rs](https://docs.rs/crossterm/). The current release is **0.29.0**.
+
+## Basic Installation
+
+Add the following to the `[dependencies]` section of your `Cargo.toml`:
+
+```toml
+[dependencies]
+crossterm = "0.29"
+```
+
+That's all you need to get started. The default feature set includes bracketed-paste support and the full event-reading subsystem.
+
+## Feature Flags
+
+Crossterm uses Cargo feature flags to keep its dependency footprint small. You can enable only what your project actually needs.
+
+### Default Features
+
+These features are active unless you explicitly opt out with `default-features = false`:
+
+| Feature | Description |
+|:---|:---|
+| `bracketed-paste` | Enables triggering `Event::Paste` when the user pastes text into the terminal. |
+| `events` | Enables reading keyboard, mouse, resize, and other input events from the system via the `event` module. Pulls in `mio`, `signal-hook`, and `signal-hook-mio` on UNIX. |
+
+### Optional Features
+
+| Feature | Description |
+|:---|:---|
+| `event-stream` | Enables [`EventStream`](https://docs.rs/crossterm/latest/crossterm/event/struct.EventStream.html), a `futures::Stream` that produces `Result<Event>`. Requires the `events` feature. |
+| `serde` | Enables `serde::Serialize` and `serde::Deserialize` for crossterm's event and color types. |
+| `use-dev-tty` | Uses raw file descriptor polling/selecting (via `filedescriptor`) instead of `mio`. Useful when you need to avoid the `mio` dependency on UNIX. |
+| `osc52` | Enables the [`clipboard`](https://docs.rs/crossterm/latest/crossterm/clipboard/index.html) module and the `CopyToClipboard` command for interacting with the host clipboard via OSC 52 sequences. |
+| `document-features` | Enables documentation for crate features (used when building docs). |
+
+## Enabling Optional Features
+
+Specify additional features using the `features` key:
+
+<CodeGroup>
+
+```toml Async event stream
+[dependencies]
+crossterm = { version = "0.29", features = ["event-stream"] }
+```
+
+```toml Serde support
+[dependencies]
+crossterm = { version = "0.29", features = ["serde"] }
+```
+
+```toml Clipboard (OSC 52)
+[dependencies]
+crossterm = { version = "0.29", features = ["osc52"] }
+```
+
+```toml Minimal (no event system)
+[dependencies]
+crossterm = { version = "0.29", default-features = false }
+```
+
+```toml Multiple optional features
+[dependencies]
+crossterm = { version = "0.29", features = ["event-stream", "serde"] }
+```
+
+</CodeGroup>
+
+<Note>
+  Disabling the `events` feature (via `default-features = false`) removes the `mio`, `signal-hook`, and `signal-hook-mio` dependencies on UNIX, giving you a much lighter build when you only need cursor movement, styling, or terminal control without interactive input.
+</Note>
+
+## MSRV
+
+Crossterm requires **Rust 1.85.0** or later. This minimum supported Rust version (MSRV) applies to the library with no default features enabled and with all public features enabled. Development tools and examples do not independently define the crate's MSRV.
+
+<Tip>
+  Run `rustup update stable` to make sure you are on a recent enough toolchain before adding crossterm to your project.
+</Tip>
+
+## Links
+
+<CardGroup cols={2}>
+  <Card title="crates.io" icon="cube" href="https://crates.io/crates/crossterm">
+    View release history and download statistics on crates.io.
+  </Card>
+  <Card title="docs.rs" icon="book" href="https://docs.rs/crossterm/">
+    Browse the full API reference, including all feature-gated items.
+  </Card>
+</CardGroup>

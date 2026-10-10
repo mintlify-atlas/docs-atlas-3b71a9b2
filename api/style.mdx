@@ -1,0 +1,494 @@
+---
+title: "style Module API Reference — Crossterm"
+sidebarTitle: "style"
+description: "API reference for the crossterm style module — Color enum, Attribute enum, Stylize trait, ContentStyle, and all color and print commands."
+---
+
+The `style` module lets you apply foreground colors, background colors, underline colors, and text attributes (bold, italic, underline, and more) to terminal output. There are two complementary approaches: the **Command API** uses structs such as `SetForegroundColor` and `Print` which are dispatched through `execute!` / `queue!`, giving explicit imperative control; the **`Stylize` trait** provides a builder-style fluent interface directly on `String`, `&str`, and `char` values, producing `StyledContent<D>` that implements `Display`. Both approaches respect the `NO_COLOR` environment variable by default, which can be overridden with `force_color_output`.
+
+---
+
+## Functions
+
+### `style`
+
+```rust
+pub fn style<D: Display>(val: D) -> StyledContent<D>
+```
+
+Wraps any value that implements `Display` in a `StyledContent` with a blank `ContentStyle`. Use the returned value's `Stylize` methods to chain colors and attributes before printing with `{}`.
+
+```rust
+use crossterm::style::{Color, style, Stylize};
+
+let styled = style("hello world").with(Color::Cyan).bold();
+println!("{}", styled);
+```
+
+---
+
+### `available_color_count`
+
+```rust
+pub fn available_color_count() -> u16
+```
+
+Returns the number of colors the terminal is estimated to support, based on the `COLORTERM` and `TERM` environment variables. Returns `u16::MAX` for true-color terminals, `256` for 256-color terminals, and `8` as the default fallback. On Windows, returns `u16::MAX` when ANSI support is detected.
+
+<Note>
+  This heuristic does not always produce an accurate result. It reads environment variables at call time and cannot query the terminal directly.
+</Note>
+
+---
+
+### `force_color_output`
+
+```rust
+pub fn force_color_output(enabled: bool)
+```
+
+Globally overrides the `NO_COLOR` environment variable. Pass `true` to force colored output even if `NO_COLOR` is set; pass `false` to re-enable `NO_COLOR` suppression.
+
+---
+
+## Commands
+
+All style commands implement the `Command` trait. Use them with `execute!` or `queue!`.
+
+### Color Commands
+
+#### `SetForegroundColor`
+
+```rust
+pub struct SetForegroundColor(pub Color);
+```
+
+Sets the terminal foreground (text) color. See the [`Color` enum](#color-enum) for available values.
+
+<ParamField path="color" type="Color" required>
+  The foreground color to apply.
+</ParamField>
+
+---
+
+#### `SetBackgroundColor`
+
+```rust
+pub struct SetBackgroundColor(pub Color);
+```
+
+Sets the terminal background color.
+
+<ParamField path="color" type="Color" required>
+  The background color to apply.
+</ParamField>
+
+---
+
+#### `SetUnderlineColor`
+
+```rust
+pub struct SetUnderlineColor(pub Color);
+```
+
+Sets the color of the text underline. 
+
+<Warning>
+  `SetUnderlineColor` is not supported by the Windows legacy API (`execute_winapi`) and will return an `Unsupported` error on those paths. It works correctly via ANSI sequences on modern terminals.
+</Warning>
+
+<ParamField path="color" type="Color" required>
+  The underline color to apply.
+</ParamField>
+
+---
+
+#### `SetColors`
+
+```rust
+pub struct SetColors(pub Colors);
+```
+
+Sets both the foreground and background color in a single ANSI sequence. More efficient than two separate calls when both need to change.
+
+<ParamField path="colors" type="Colors" required>
+  A `Colors` struct with optional foreground and background fields.
+</ParamField>
+
+The `Colors` struct:
+
+```rust
+pub struct Colors {
+    pub foreground: Option<Color>,
+    pub background: Option<Color>,
+}
+```
+
+```rust
+use crossterm::style::{Color, Colors, SetColors};
+// Use Colors::new for a convenient constructor:
+SetColors(Colors::new(Color::Green, Color::Black))
+```
+
+---
+
+#### `ResetColor`
+
+```rust
+pub struct ResetColor;
+```
+
+Resets both the foreground and background colors back to the terminal's default. Should be used at the end of any styled output section.
+
+---
+
+### Attribute Commands
+
+#### `SetAttribute`
+
+```rust
+pub struct SetAttribute(pub Attribute);
+```
+
+Applies a single text attribute (e.g., bold, italic, underlined).
+
+<ParamField path="attribute" type="Attribute" required>
+  The attribute to set. See the [`Attribute` enum](#attribute-enum).
+</ParamField>
+
+---
+
+#### `SetAttributes`
+
+```rust
+pub struct SetAttributes(pub Attributes);
+```
+
+Applies multiple text attributes at once. `Attributes` is a bitset wrapper that can be built from individual `Attribute` values.
+
+<ParamField path="attributes" type="Attributes" required>
+  A bitset of zero or more `Attribute` values.
+</ParamField>
+
+---
+
+#### `SetStyle`
+
+```rust
+pub struct SetStyle(pub ContentStyle);
+```
+
+Applies a complete `ContentStyle` (foreground color, background color, underline color, and all attributes) in one command.
+
+<ParamField path="style" type="ContentStyle" required>
+  The complete style to apply.
+</ParamField>
+
+---
+
+### Print Commands
+
+#### `Print`
+
+```rust
+pub struct Print<T: Display>(pub T);
+```
+
+Prints any value that implements `Display` to the terminal. Implements both `Command` and `Display`, so it can also be used directly with `{}` in format strings.
+
+<ParamField path="value" type="T: Display" required>
+  The value to print.
+</ParamField>
+
+---
+
+#### `PrintStyledContent`
+
+```rust
+pub struct PrintStyledContent<D: Display>(pub StyledContent<D>);
+```
+
+Prints a `StyledContent<D>` value, applying its embedded colors and attributes, then automatically resets them afterward.
+
+<ParamField path="content" type="StyledContent<D>" required>
+  The styled content to print.
+</ParamField>
+
+---
+
+### Hyperlink Commands
+
+#### `StartHyperlink`
+
+```rust
+pub struct StartHyperlink<T> {
+    pub url: T,
+    pub params: Vec<(String, String)>,
+}
+```
+
+Begins an [OSC 8 hyperlink](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda). Text printed after this command will be rendered as a clickable hyperlink in supporting terminals, until `EndHyperlink` is written.
+
+Use `StartHyperlink::new(url)` to construct one, and `.param(key, value)` to attach optional parameters such as `id`.
+
+```rust
+use crossterm::style::{StartHyperlink, EndHyperlink};
+use crossterm::execute;
+
+execute!(
+    std::io::stdout(),
+    StartHyperlink::new("https://example.com").param("id", "link1"),
+)?;
+print!("Click me");
+execute!(std::io::stdout(), EndHyperlink)?;
+```
+
+<ParamField path="url" type="T: AsRef<str>" required>
+  The URL target of the hyperlink.
+</ParamField>
+<ParamField path="params" type="Vec<(String, String)>">
+  Optional key-value parameters appended to the OSC 8 sequence (e.g., `id`).
+</ParamField>
+
+---
+
+#### `EndHyperlink`
+
+```rust
+pub struct EndHyperlink;
+```
+
+Ends an OSC 8 hyperlink started by `StartHyperlink`.
+
+---
+
+## Color Enum
+
+```rust
+pub enum Color {
+    Reset,
+    Black,
+    DarkGrey,
+    Red,
+    DarkRed,
+    Green,
+    DarkGreen,
+    Yellow,
+    DarkYellow,
+    Blue,
+    DarkBlue,
+    Magenta,
+    DarkMagenta,
+    Cyan,
+    DarkCyan,
+    White,
+    Grey,
+    Rgb { r: u8, g: u8, b: u8 },
+    AnsiValue(u8),
+}
+```
+
+The `Reset` variant resets the color channel to the terminal default. The 16 named variants are available on virtually all terminals. `Rgb` and `AnsiValue` require a modern terminal (most Unix terminals and Windows 10+).
+
+| Variant | Notes |
+|---|---|
+| `Reset` | Resets to terminal default |
+| `Black` | |
+| `DarkGrey` | |
+| `Red` | Light red |
+| `DarkRed` | |
+| `Green` | Light green |
+| `DarkGreen` | |
+| `Yellow` | Light yellow |
+| `DarkYellow` | |
+| `Blue` | Light blue |
+| `DarkBlue` | |
+| `Magenta` | Light magenta |
+| `DarkMagenta` | |
+| `Cyan` | Light cyan |
+| `DarkCyan` | |
+| `White` | |
+| `Grey` | |
+| `AnsiValue(u8)` | 256-color palette index (0–255) |
+| `Rgb { r, g, b }` | True color, 24-bit RGB |
+
+`Color` implements `TryFrom<&str>` (returns an error on unknown names) and `FromStr` (returns `Color::White` as fallback). It also implements `From<(u8, u8, u8)>` as a shorthand for `Rgb`.
+
+---
+
+## Attribute Enum
+
+```rust
+pub enum Attribute {
+    Reset,
+    Bold,
+    Dim,
+    Italic,
+    Underlined,
+    DoubleUnderlined,
+    Undercurled,
+    Underdotted,
+    Underdashed,
+    SlowBlink,
+    RapidBlink,
+    Reverse,
+    Hidden,
+    CrossedOut,
+    Fraktur,
+    NoBold,
+    NormalIntensity,
+    NoItalic,
+    NoUnderline,
+    NoBlink,
+    NoReverse,
+    NoHidden,
+    NotCrossedOut,
+    Framed,
+    Encircled,
+    OverLined,
+    NotFramedOrEncircled,
+    NotOverLined,
+    // non-exhaustive
+}
+```
+
+<Note>
+  `Attribute` is `#[non_exhaustive]` — new variants may be added in future releases without a breaking change.
+</Note>
+
+| Variant | SGR | Description |
+|---|---|---|
+| `Reset` | 0 | Resets all attributes |
+| `Bold` | 1 | Increased text intensity |
+| `Dim` | 2 | Decreased text intensity |
+| `Italic` | 3 | Emphasized/italic |
+| `Underlined` | 4 | Single underline |
+| `DoubleUnderlined` | 4:2 | Double underline |
+| `Undercurled` | 4:3 | Curly underline |
+| `Underdotted` | 4:4 | Dotted underline |
+| `Underdashed` | 4:5 | Dashed underline |
+| `SlowBlink` | 5 | Blink < 150/min |
+| `RapidBlink` | 6 | Blink ≥ 150/min |
+| `Reverse` | 7 | Swap fg/bg colors |
+| `Hidden` | 8 | Concealed (invisible) text |
+| `CrossedOut` | 9 | Strikethrough |
+| `Fraktur` | 20 | Fraktur typeface |
+| `NoBold` | 21 | Remove bold (use `NormalIntensity` instead) |
+| `NormalIntensity` | 22 | Remove bold/dim |
+| `NoItalic` | 23 | Remove italic |
+| `NoUnderline` | 24 | Remove underline |
+| `NoBlink` | 25 | Remove blink |
+| `NoReverse` | 27 | Remove reverse |
+| `NoHidden` | 28 | Remove hidden |
+| `NotCrossedOut` | 29 | Remove strikethrough |
+| `Framed` | 51 | Framed text |
+| `Encircled` | 52 | Encircled text |
+| `OverLined` | 53 | Line above text |
+| `NotFramedOrEncircled` | 54 | Remove framed/encircled |
+| `NotOverLined` | 55 | Remove overline |
+
+---
+
+## Stylize Trait
+
+```rust
+pub trait Stylize: Sized {
+    type Styled: AsRef<ContentStyle> + AsMut<ContentStyle>;
+
+    fn stylize(self) -> Self::Styled;
+    fn with(self, color: Color) -> Self::Styled;       // set foreground
+    fn on(self, color: Color) -> Self::Styled;         // set background
+    fn underline(self, color: Color) -> Self::Styled;  // set underline color
+    fn attribute(self, attr: Attribute) -> Self::Styled;
+
+    // Attribute shortcuts
+    fn reset(self) -> Self::Styled;
+    fn bold(self) -> Self::Styled;
+    fn underlined(self) -> Self::Styled;
+    fn reverse(self) -> Self::Styled;
+    fn dim(self) -> Self::Styled;
+    fn italic(self) -> Self::Styled;
+    fn negative(self) -> Self::Styled;   // alias for reverse
+    fn slow_blink(self) -> Self::Styled;
+    fn rapid_blink(self) -> Self::Styled;
+    fn hidden(self) -> Self::Styled;
+    fn crossed_out(self) -> Self::Styled;
+
+    // Named color shortcuts (fg / bg / underline)
+    fn black(self) -> Self::Styled;   fn on_black(self) -> Self::Styled;   fn underline_black(self) -> Self::Styled;
+    fn dark_grey(self) -> Self::Styled; /* ... and so on for all 16 named colors */
+    fn red(self) -> Self::Styled;     fn on_red(self) -> Self::Styled;     fn underline_red(self) -> Self::Styled;
+    fn green(self) -> Self::Styled;   fn on_green(self) -> Self::Styled;   fn underline_green(self) -> Self::Styled;
+    fn yellow(self) -> Self::Styled;  fn on_yellow(self) -> Self::Styled;  fn underline_yellow(self) -> Self::Styled;
+    fn blue(self) -> Self::Styled;    fn on_blue(self) -> Self::Styled;    fn underline_blue(self) -> Self::Styled;
+    fn cyan(self) -> Self::Styled;    fn on_cyan(self) -> Self::Styled;    fn underline_cyan(self) -> Self::Styled;
+    fn white(self) -> Self::Styled;   fn on_white(self) -> Self::Styled;   fn underline_white(self) -> Self::Styled;
+    // ... and dark_red, dark_green, dark_yellow, dark_blue, magenta,
+    //     dark_magenta, dark_cyan, grey with the same three-method pattern
+}
+```
+
+`Stylize` is implemented for `String`, `&str`, `char`, `ContentStyle`, and `StyledContent<D>`. Each method returns `Self::Styled` (a `StyledContent` for string types), enabling full method chaining.
+
+---
+
+## ContentStyle Struct
+
+```rust
+pub struct ContentStyle {
+    pub foreground_color: Option<Color>,
+    pub background_color: Option<Color>,
+    pub underline_color:  Option<Color>,
+    pub attributes:       Attributes,
+}
+```
+
+`ContentStyle` holds the complete styling state for a piece of content. Construct one with `ContentStyle::new()` (all fields empty) and then use `Stylize` methods or set fields directly. Call `.apply(val)` to produce a `StyledContent<D>`.
+
+---
+
+## Examples
+
+### Command API
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::execute;
+use crossterm::style::{
+    Attribute, Color, Print, ResetColor,
+    SetAttribute, SetBackgroundColor, SetForegroundColor,
+};
+
+fn main() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        SetForegroundColor(Color::Blue),
+        SetBackgroundColor(Color::Red),
+        SetAttribute(Attribute::Bold),
+        Print("Bold blue text on red background."),
+        SetAttribute(Attribute::Reset),
+        ResetColor,
+    )
+}
+```
+
+### Stylize Builder
+
+```rust
+use crossterm::style::Stylize;
+
+// Fluent chaining on string literals
+println!("{}", "Error!".red().on_white().bold());
+println!("{}", "Link".blue().underlined());
+println!("{}", "Warning".yellow().italic());
+
+// Using style() for non-static strings
+use crossterm::style::{Color, style};
+let message = format!("Score: {}", 42);
+println!("{}", style(message).with(Color::Cyan).bold());
+```
+
+<Tip>
+  When using the `Stylize` builder approach, the colors and attributes are reset automatically after the styled content is printed by `PrintStyledContent`. With the raw command API you must call `ResetColor` and `SetAttribute(Attribute::Reset)` manually.
+</Tip>

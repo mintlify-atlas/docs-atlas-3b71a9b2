@@ -1,0 +1,405 @@
+---
+title: "Styling Terminal Output: Colors and Text Attributes"
+sidebarTitle: "Styling"
+description: "Learn how to apply foreground and background colors, underline colors, and text attributes like bold, italic, and underline to terminal output."
+---
+
+The `crossterm::style` module lets you paint terminal output with foreground colors, background colors, underline colors, and a rich set of text attributes such as bold, italic, and strikethrough. Crossterm offers two complementary APIs: the **Command API**, which integrates naturally with `execute!` and `queue!` for fine-grained control, and the **`Stylize` trait**, which provides an ergonomic builder syntax directly on `String`, `&str`, and `char`. Both paths ultimately emit the same ANSI SGR sequences, so you can mix them freely within the same program.
+
+<Note>
+Like all crossterm commands, color and attribute commands must be **executed or queued** to have any effect. Constructing a command struct alone does nothing — pass it to `execute!`, `queue!`, or call `.execute()` / `.queue()` on a `std::io::Write` implementor.
+</Note>
+
+## Colors
+
+### Setting Foreground, Background, and Underline Colors
+
+Three commands let you change the active colors independently:
+
+- **`SetForegroundColor(Color)`** — sets the color used for text characters.
+- **`SetBackgroundColor(Color)`** — sets the color drawn behind text characters.
+- **`SetUnderlineColor(Color)`** — sets the color of the underline decoration (not supported by WinAPI; use ANSI-capable terminals).
+- **`ResetColor`** — resets both foreground and background to the terminal's defaults.
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute,
+    style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
+};
+
+fn main() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        SetForegroundColor(Color::Blue),
+        SetBackgroundColor(Color::Red),
+        Print("Blue text on Red.".to_string()),
+        ResetColor
+    )
+}
+```
+
+### The `Color` Enum
+
+`Color` covers 16 named palette colors available on virtually every terminal (including Windows 7 and 8), plus 256-color ANSI values and full 24-bit RGB.
+
+| Variant | Description |
+|---|---|
+| `Color::Black` | Black |
+| `Color::DarkGrey` | Dark grey |
+| `Color::Red` | Light red |
+| `Color::DarkRed` | Dark red |
+| `Color::Green` | Light green |
+| `Color::DarkGreen` | Dark green |
+| `Color::Yellow` | Light yellow |
+| `Color::DarkYellow` | Dark yellow |
+| `Color::Blue` | Light blue |
+| `Color::DarkBlue` | Dark blue |
+| `Color::Magenta` | Light magenta |
+| `Color::DarkMagenta` | Dark magenta |
+| `Color::Cyan` | Light cyan |
+| `Color::DarkCyan` | Dark cyan |
+| `Color::White` | White |
+| `Color::Grey` | Grey |
+| `Color::AnsiValue(u8)` | One of the 256 ANSI palette colors (0–255) |
+| `Color::Rgb { r, g, b }` | 24-bit true color (most UNIX + Windows 10+) |
+| `Color::Reset` | Resets to the terminal's default color |
+
+<Note>
+The 16 named colors (`Black` through `Grey`) work on nearly all terminals, including Windows 7 and 8. `Color::AnsiValue` and `Color::Rgb` require a modern UNIX terminal or Windows 10+.
+</Note>
+
+<CodeGroup>
+```rust Named colors
+use crossterm::{execute, style::{Color, SetForegroundColor, SetBackgroundColor, ResetColor, Print}};
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        SetForegroundColor(Color::Cyan),
+        SetBackgroundColor(Color::DarkBlue),
+        Print("Cyan on dark blue"),
+        ResetColor
+    )
+}
+```
+
+```rust ANSI 256-color
+use crossterm::{execute, style::{Color, SetForegroundColor, ResetColor, Print}};
+use std::io;
+
+fn main() -> io::Result<()> {
+    // Color index 202 is a deep orange in the 256-color palette
+    execute!(
+        io::stdout(),
+        SetForegroundColor(Color::AnsiValue(202)),
+        Print("ANSI 202 orange"),
+        ResetColor
+    )
+}
+```
+
+```rust True color RGB
+use crossterm::{execute, style::{Color, SetForegroundColor, SetBackgroundColor, ResetColor, Print}};
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        SetForegroundColor(Color::Rgb { r: 255, g: 165, b: 0 }),
+        SetBackgroundColor(Color::Rgb { r: 30, g: 30, b: 30 }),
+        Print("True-color orange on near-black"),
+        ResetColor
+    )
+}
+```
+</CodeGroup>
+
+### Setting Both Colors at Once with `SetColors`
+
+`SetColors(Colors)` sets the foreground and background in a single ANSI sequence, which is measurably faster when rendering full-screen content where every cell may have a distinct color pair.
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute,
+    style::{
+        Color::{Black, Green},
+        Colors, Print, SetColors,
+    },
+};
+
+fn main() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        SetColors(Colors::new(Green, Black)),
+        Print("Hello, world!".to_string()),
+    )?;
+    Ok(())
+}
+```
+
+The `Colors` struct holds `Option<Color>` for both foreground and background, so either field can be `None` to leave the corresponding color unchanged.
+
+### Helper Functions
+
+| Function | Description |
+|---|---|
+| `available_color_count() -> u16` | Estimates how many colors the terminal supports. Returns `u16::MAX` for true-color terminals, `256` for 256-color, or `8` as the default. |
+| `force_color_output(enabled: bool)` | Globally overrides the `NO_COLOR` environment variable, forcing color output on or off regardless of environment settings. |
+
+```rust
+use crossterm::style::{available_color_count, force_color_output};
+
+fn main() {
+    let count = available_color_count();
+    println!("Terminal supports approximately {count} colors");
+
+    // Force colors even when NO_COLOR is set
+    force_color_output(true);
+}
+```
+
+## Text Attributes
+
+### `SetAttribute` and the `Attribute` Enum
+
+`SetAttribute(Attribute)` applies a single SGR text attribute. Attributes stack — apply `Reset` to clear all of them at once.
+
+| Attribute | Description | Windows | UNIX |
+|---|---|:---:|:---:|
+| `Attribute::Reset` | Clear all attributes | ✓ | ✓ |
+| `Attribute::Bold` | Increase text intensity | ✓ | ✓ |
+| `Attribute::Dim` | Decrease text intensity | ✓ | ✓ |
+| `Attribute::Italic` | Italicise text | ? | ? |
+| `Attribute::Underlined` | Underline text | ✓ | ✓ |
+| `Attribute::DoubleUnderlined` | Double underline | — | ✓ |
+| `Attribute::Undercurled` | Curly underline | — | ✓ |
+| `Attribute::Underdotted` | Dotted underline | — | ✓ |
+| `Attribute::Underdashed` | Dashed underline | — | ✓ |
+| `Attribute::SlowBlink` | Blink < 150 times/min | ? | ? |
+| `Attribute::RapidBlink` | Blink ≥ 150 times/min | ? | ? |
+| `Attribute::Reverse` | Swap fg and bg colors | ✓ | ✓ |
+| `Attribute::Hidden` | Hide text (Conceal) | ✓ | ✓ |
+| `Attribute::CrossedOut` | Strikethrough text | ✓ | ✓ |
+| `Attribute::Fraktur` | Fraktur typeface | ✗ | ✓ |
+| `Attribute::OverLined` | Line above the text | ? | ? |
+| `Attribute::NormalIntensity` | Remove Bold/Dim | ✓ | ✓ |
+| `Attribute::NoUnderline` | Remove underline | ✓ | ✓ |
+| `Attribute::NoBlink` | Remove blinking | ✓ | ✓ |
+| `Attribute::NoReverse` | Remove reverse | ✓ | ✓ |
+| `Attribute::NoHidden` | Remove hidden | ✓ | ✓ |
+| `Attribute::NotCrossedOut` | Remove strikethrough | ✓ | ✓ |
+
+<Warning>
+Only UNIX terminals and Windows 10+ support text attributes. On older Windows, `SetAttribute` is silently ignored. Not all terminals support every attribute — `Italic`, `SlowBlink`, `RapidBlink`, `Fraktur`, `OverLined`, and the fancy underline variants (`Undercurled`, `Underdotted`, `Underdashed`) are particularly inconsistent across terminal emulators.
+</Warning>
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute,
+    style::{Attribute, Print, SetAttribute},
+};
+
+fn main() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        SetAttribute(Attribute::Bold),
+        Print("Bold text here.".to_string()),
+        SetAttribute(Attribute::Reset)
+    )
+}
+```
+
+### Setting Multiple Attributes with `SetAttributes`
+
+`SetAttributes(Attributes)` applies a whole set of attributes in one command. Build an `Attributes` bitset by calling `set()` on it, then pass it to the command.
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute,
+    style::{Attribute, Attributes, Print, SetAttribute, SetAttributes},
+};
+
+fn main() -> io::Result<()> {
+    let mut attrs = Attributes::default();
+    attrs.set(Attribute::Bold);
+    attrs.set(Attribute::Underlined);
+
+    execute!(
+        io::stdout(),
+        SetAttributes(attrs),
+        Print("Bold and underlined"),
+        SetAttribute(Attribute::Reset)
+    )
+}
+```
+
+## The `Stylize` Trait
+
+The `Stylize` trait provides a fluent builder API for styling strings directly. It is implemented for `String`, `&str`, and `char`. Each method call returns a `StyledContent<D>`, which implements `Display` — so you can drop it straight into `println!` or pass it to `PrintStyledContent`.
+
+### Key `Stylize` Methods
+
+**Color setters** (each color has `.<color>()` for fg, `.on_<color>()` for bg, and `.underline_<color>()` for underline color):
+
+```
+.black()   .on_black()   .underline_black()
+.red()     .on_red()     .underline_red()
+.green()   .on_green()   .underline_green()
+.yellow()  .on_yellow()  .underline_yellow()
+.blue()    .on_blue()    .underline_blue()
+.magenta() .on_magenta() .underline_magenta()
+.cyan()    .on_cyan()    .underline_cyan()
+.white()   .on_white()   .underline_white()
+.grey()    .on_grey()    .underline_grey()
+// dark variants follow the same pattern: .dark_red(), .on_dark_blue(), etc.
+```
+
+For arbitrary colors use `.with(Color)`, `.on(Color)`, and `.underline(Color)`.
+
+**Attribute setters:**
+
+```
+.bold()        .dim()         .italic()
+.underlined()  .reverse()     .negative()   // alias for .reverse()
+.slow_blink()  .rapid_blink() .hidden()
+.crossed_out() .reset()
+```
+
+### Example
+
+```rust
+use crossterm::style::Stylize;
+
+fn main() {
+    // Simple chained style
+    println!("{}", "Red foreground color & blue background.".red().on_blue());
+
+    // Multiple attributes
+    println!("{}", "Bold".bold());
+    println!("{}", "Underlined".underlined());
+    println!("{}", "Negative (reversed)".negative());
+
+    // Arbitrary color via .with() / .on()
+    use crossterm::style::Color;
+    println!(
+        "{}",
+        "True-color text"
+            .with(Color::Rgb { r: 255, g: 140, b: 0 })
+            .on(Color::Black)
+            .bold()
+    );
+}
+```
+
+### `StyledContent<D>` and `PrintStyledContent`
+
+`Stylize` methods return a `StyledContent<D>` value, which pairs a `ContentStyle` (colors + attributes) with a piece of `Display` content. It implements `Display` itself, so `println!("{}", styled)` just works.
+
+When you need to integrate styled output into the Command API pipeline, wrap it in `PrintStyledContent`:
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute, queue,
+    cursor::MoveTo,
+    style::{Color, PrintStyledContent, Stylize},
+};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Use queue! for batched rendering
+    for row in 0..5_u16 {
+        queue!(
+            stdout,
+            MoveTo(0, row),
+            PrintStyledContent(
+                format!("Row {row}").cyan().on_dark_blue().bold()
+            )
+        )?;
+    }
+
+    stdout.flush()?;
+    Ok(())
+}
+```
+
+## Hyperlinks
+
+Crossterm supports [OSC 8 hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda), which make terminal text into clickable links in supported terminal emulators.
+
+- **`StartHyperlink::new(url)`** — begins a hyperlink region. All text printed after this command will be a clickable link to `url` until `EndHyperlink` is printed.
+- **`EndHyperlink`** — closes the hyperlink region.
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute,
+    style::{
+        Print,
+        hyperlink::{StartHyperlink, EndHyperlink},
+    },
+};
+
+fn main() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        StartHyperlink::new("https://github.com/crossterm-rs/crossterm"),
+        Print("crossterm on GitHub"),
+        EndHyperlink,
+    )
+}
+```
+
+`StartHyperlink` also accepts optional key-value parameters via the `.param(key, value)` builder method, which are included in the OSC 8 escape sequence (e.g., for link `id` tracking):
+
+```rust
+use crossterm::style::hyperlink::StartHyperlink;
+
+let link = StartHyperlink::new("https://example.com")
+    .param("id", "link1");
+```
+
+<Note>
+Hyperlink support depends entirely on the terminal emulator. iTerm2, WezTerm, foot, Kitty, and recent versions of GNOME Terminal support OSC 8. Most Windows terminals do not.
+</Note>
+
+## The `Print` Command
+
+`Print<T: Display>` is the command-API way to write arbitrary `Display`able values to the terminal. Unlike `write!`, it participates in the command pipeline, so you can intersperse it with color and cursor commands in a single `execute!` or `queue!` call.
+
+```rust
+use crossterm::{execute, style::{Color, Print, ResetColor, SetForegroundColor}};
+use std::io;
+
+fn main() -> io::Result<()> {
+    let value = 42_u32;
+    execute!(
+        io::stdout(),
+        SetForegroundColor(Color::Yellow),
+        Print(format!("The answer is {value}")),
+        ResetColor,
+    )
+}
+```
+
+## Platform Notes
+
+- Text attributes are only supported on UNIX terminals and Windows 10+. On older Windows, attribute commands are accepted but silently ignored.
+- `SetUnderlineColor` is not supported by the Windows console API (WinAPI); it requires ANSI mode.
+- Fancy underline variants (`Undercurled`, `Underdotted`, `Underdashed`, `DoubleUnderlined`) are only widely supported in modern terminal emulators (Kitty, WezTerm, iTerm2).
+- `Italic`, `SlowBlink`, and `RapidBlink` are inconsistently supported and are sometimes rendered as `Reverse` on terminals that do not implement them.
+- `Fraktur` is supported on UNIX but not on Windows.
+- On Windows with ANSI support (Windows 10+), `available_color_count()` returns `u16::MAX` (true-color). On other Windows systems it falls back to checking `COLORTERM` and `TERM` environment variables.
+- Call `force_color_output(true)` to override the `NO_COLOR` environment variable and ensure your application always emits color sequences.

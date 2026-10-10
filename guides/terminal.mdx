@@ -1,0 +1,372 @@
+---
+title: "Terminal Control: Raw Mode, Alternate Screen, and More"
+sidebarTitle: "Terminal"
+description: "how to manage raw mode, alternate screen buffers, terminal size, and output in crossterm."
+---
+
+crossterm's `terminal` module gives you direct control over the terminal emulator itself: switching input processing modes, flipping between screen buffers, querying and adjusting the terminal dimensions, clearing and scrolling content, and fine-tuning output behaviour such as line wrapping and synchronized rendering. Most operations are expressed as crossterm _commands_ dispatched via `execute!` or `queue!`, with a small set of stand-alone functions for the things that return data (like `size()`) or that affect persistent OS-level state (like `enable_raw_mode()`).
+
+## Raw mode
+
+### What raw mode does
+
+By default, a terminal operates in _cooked_ mode: the operating system line-disciplines buffer your input, echo it back to the screen, and intercept special key combinations (Ctrl+C, Ctrl+Z, backspace, …) before your program ever sees them. Raw mode turns all of that off so your application receives every keystroke immediately and unprocessed.
+
+Specifically, enabling raw mode changes:
+
+- **No input echo** — characters typed by the user are not automatically displayed.
+- **No line buffering** — input is delivered byte-by-byte instead of waiting for Enter.
+- **No special-key processing** — keys like Backspace and Ctrl+C are delivered as plain events rather than being acted upon by the OS.
+- **No newline processing** — the terminal no longer converts `\n` to `\r\n`, so you must use `write!` / `print!` with explicit `\r\n`, not `println!`.
+
+### API
+
+```rust
+use crossterm::terminal::{enable_raw_mode, disable_raw_mode, is_raw_mode_enabled};
+
+// Enter raw mode
+enable_raw_mode()?;
+
+// Query current state
+if is_raw_mode_enabled()? {
+    println!("raw mode is active\r");
+}
+
+// Return to cooked mode
+disable_raw_mode()?;
+```
+
+<Warning>
+Because raw mode is a global OS-level setting, you must call `disable_raw_mode()` before your program exits — even when unwinding from an error. Failing to do so leaves the user's terminal in a broken state. See the [cleanup pattern](#cleanup-pattern) section below.
+</Warning>
+
+### Complete example with cleanup
+
+```rust
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use std::io;
+
+fn run() -> io::Result<()> {
+    enable_raw_mode()?;
+
+    // Use write! with "\r\n" — println! won't work in raw mode
+    use std::io::Write;
+    let mut stdout = io::stdout();
+    write!(stdout, "Raw mode active. Press Ctrl+C to exit.\r\n")?;
+    stdout.flush()?;
+
+    // ... your application logic ...
+
+    disable_raw_mode()?;
+    Ok(())
+}
+
+fn main() {
+    if let Err(e) = run() {
+        // Always restore terminal before printing errors
+        let _ = disable_raw_mode();
+        eprintln!("Error: {e}");
+    }
+}
+```
+
+## Alternate screen
+
+The terminal maintains two independent screen buffers: the _main_ screen (the ordinary shell prompt) and the _alternate_ screen. Applications like Vim and less switch to the alternate screen when they launch so they can freely paint the entire terminal surface without destroying the user's scrollback history, then restore the main screen on exit.
+
+crossterm provides `EnterAlternateScreen` and `LeaveAlternateScreen` commands for this:
+
+```rust
+use crossterm::{
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen},
+};
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(io::stdout(), EnterAlternateScreen)?;
+
+    // Paint and interact freely — main screen is untouched
+    use std::io::Write;
+    write!(io::stdout(), "You are on the alternate screen\r\n")?;
+
+    // Restore main screen
+    execute!(io::stdout(), LeaveAlternateScreen)?;
+    Ok(())
+}
+```
+
+### Alternate scroll mode
+
+By default, the mouse scroll wheel and keyboard page-up/down move through the terminal's scrollback buffer while on the alternate screen. `EnableAlternateScrollMode` converts those scroll events into cursor-up/cursor-down key events instead, which is useful for applications that want to handle scrolling themselves.
+
+<Note>
+`EnableAlternateScrollMode` and `DisableAlternateScrollMode` are not supported on Windows.
+</Note>
+
+```rust
+use crossterm::{
+    execute,
+    terminal::{
+        DisableAlternateScrollMode, EnableAlternateScrollMode,
+        EnterAlternateScreen, LeaveAlternateScreen,
+    },
+};
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(io::stdout(), EnterAlternateScreen, EnableAlternateScrollMode)?;
+
+    // Scroll events now arrive as key events in your event loop
+
+    execute!(io::stdout(), DisableAlternateScrollMode, LeaveAlternateScreen)?;
+    Ok(())
+}
+```
+
+## Terminal size
+
+### `size()` — column/row count
+
+`size()` returns the current terminal dimensions as `(columns, rows)`, both as `u16`.
+
+```rust
+use crossterm::terminal::size;
+
+let (cols, rows) = size()?;
+println!("Terminal is {cols} columns × {rows} rows");
+```
+
+### `window_size()` — pixel dimensions too
+
+`window_size()` returns a `WindowSize` struct that also carries pixel dimensions for terminals that report them.
+
+```rust
+use crossterm::terminal::window_size;
+
+let ws = window_size()?;
+println!(
+    "Cells: {}×{}  Pixels: {}×{}",
+    ws.columns, ws.rows, ws.width, ws.height
+);
+```
+
+#### `WindowSize` fields
+
+| Field | Type | Description |
+|---|---|---|
+| `columns` | `u16` | Terminal width in character cells. |
+| `rows` | `u16` | Terminal height in character cells. |
+| `width` | `u16` | Terminal width in pixels (may be 0 if unsupported). |
+| `height` | `u16` | Terminal height in pixels (may be 0 if unsupported). |
+
+<Note>
+Pixel dimensions (`width` / `height`) are documented as "unused" in the Linux tty ioctl interface and are not implemented on Windows — treat a zero value as "not available".
+</Note>
+
+### `SetSize` — resize the terminal
+
+`SetSize(columns, rows)` asks the terminal emulator to resize its window. This is most useful in tests or scripts; interactive applications generally react to `Event::Resize` rather than causing it.
+
+```rust
+use crossterm::{execute, terminal::{SetSize, size}};
+use std::io;
+
+fn main() -> io::Result<()> {
+    let (original_cols, original_rows) = size()?;
+
+    execute!(io::stdout(), SetSize(80, 24))?;
+
+    // ... do work ...
+
+    // Restore original dimensions
+    execute!(io::stdout(), SetSize(original_cols, original_rows))?;
+    Ok(())
+}
+```
+
+## Clearing and scrolling
+
+### `Clear(ClearType)`
+
+The `Clear` command erases part or all of the screen buffer. Pass one of the `ClearType` variants:
+
+| Variant | What gets erased |
+|---|---|
+| `All` | Every cell in the visible screen. |
+| `Purge` | Every cell in the visible screen **plus** the scrollback history. |
+| `FromCursorDown` | All cells from the cursor position to the end of the screen. |
+| `FromCursorUp` | All cells from the start of the screen to the cursor position. |
+| `CurrentLine` | All cells on the cursor's current row. |
+| `UntilNewLine` | All cells from the cursor to the end of the current row. |
+
+```rust
+use crossterm::{execute, terminal::{Clear, ClearType}};
+use std::io;
+
+fn main() -> io::Result<()> {
+    // Clear the entire visible screen
+    execute!(io::stdout(), Clear(ClearType::All))?;
+
+    // Clear only from the cursor downward
+    execute!(io::stdout(), Clear(ClearType::FromCursorDown))?;
+    Ok(())
+}
+```
+
+### `ScrollUp(n)` and `ScrollDown(n)`
+
+Scroll the content of the terminal screen up or down by `n` rows. New blank rows are inserted at the opposite edge.
+
+```rust
+use crossterm::{execute, terminal::{ScrollUp, ScrollDown, SetSize, size}};
+use std::io;
+
+fn main() -> io::Result<()> {
+    let (cols, rows) = size()?;
+    // Resize, scroll up 5 rows, then restore
+    execute!(io::stdout(), SetSize(cols, rows), ScrollUp(5))?;
+    execute!(io::stdout(), SetSize(cols, rows))?;
+    Ok(())
+}
+```
+
+## Line wrapping
+
+By default, content that extends beyond the right edge of the terminal wraps to the next line. You can disable that with `DisableLineWrap` and re-enable it with `EnableLineWrap`:
+
+```rust
+use crossterm::{execute, terminal::{DisableLineWrap, EnableLineWrap}};
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(io::stdout(), DisableLineWrap)?;
+
+    // Long lines will now be clipped rather than wrapped
+
+    execute!(io::stdout(), EnableLineWrap)?;
+    Ok(())
+}
+```
+
+## Terminal title
+
+`SetTitle<T: Display>` sets the title shown in the terminal window's title bar or tab:
+
+```rust
+use crossterm::{execute, terminal::SetTitle};
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(io::stdout(), SetTitle("My TUI Application"))?;
+    Ok(())
+}
+```
+
+## Synchronized updates
+
+Fast-drawing applications can produce visible tearing because the terminal emulator renders each incoming sequence as it arrives. _Synchronized update mode_ tells the emulator to buffer all rendering between `BeginSynchronizedUpdate` and `EndSynchronizedUpdate` and flush it as a single atomic frame:
+
+```rust
+use crossterm::{
+    execute,
+    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
+};
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(io::stdout(), BeginSynchronizedUpdate)?;
+
+    // All drawing calls here are held by the terminal emulator
+    // and not rendered until EndSynchronizedUpdate is executed.
+
+    execute!(io::stdout(), EndSynchronizedUpdate)?;
+    Ok(())
+}
+```
+
+<Tip>
+Wrap every frame of your render loop in `BeginSynchronizedUpdate` / `EndSynchronizedUpdate` to eliminate tearing on supported terminals. Terminals that do not implement the protocol simply ignore the sequences, so it is safe to use unconditionally.
+</Tip>
+
+## Cleanup pattern
+
+Terminal state is process-global. If your program exits without restoring raw mode, the alternate screen, mouse capture, or any other mode it enabled, the user's shell session will be left broken. Rust's `Drop` trait is the natural place to encode cleanup.
+
+### Using a drop guard
+
+```rust
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use std::io;
+
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn new() -> io::Result<Self> {
+        enable_raw_mode()?;
+        Ok(RawModeGuard)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        // Best-effort: ignore errors during drop
+        let _ = disable_raw_mode();
+    }
+}
+
+fn main() -> io::Result<()> {
+    let _guard = RawModeGuard::new()?;
+
+    // Raw mode is active for the lifetime of `_guard`.
+    // Restoration happens automatically when `_guard` is dropped —
+    // even if `main` returns via `?` or a panic.
+
+    Ok(())
+}
+```
+
+### Full TUI setup and teardown example
+
+The pattern below is the standard boilerplate used by most crossterm-based TUI applications. It combines raw mode, the alternate screen, and mouse capture, and cleans all three up regardless of whether the application returns `Ok` or `Err`:
+
+```rust
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
+    terminal::{
+        disable_raw_mode, enable_raw_mode,
+        EnterAlternateScreen, LeaveAlternateScreen,
+    },
+};
+use std::io;
+
+fn setup() -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    Ok(())
+}
+
+fn teardown() -> io::Result<()> {
+    execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+    disable_raw_mode()?;
+    Ok(())
+}
+
+fn run_app() -> io::Result<()> {
+    // ... event loop, rendering, etc. ...
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    setup()?;
+    let result = run_app();
+    // Always tear down, even if run_app returned an error
+    teardown()?;
+    result
+}
+```
+
+<Warning>
+Notice that `teardown()` is called unconditionally before returning `result`. If you propagate the error from `run_app()` with `?` before calling `teardown()`, you will leave the terminal in a broken state whenever your application encounters an error.
+</Warning>

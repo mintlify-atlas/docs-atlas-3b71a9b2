@@ -1,0 +1,136 @@
+---
+title: "Platform Support and Compatibility in Crossterm"
+sidebarTitle: "Platform Support"
+description: "Which operating systems and terminal emulators crossterm supports, including ANSI vs WinAPI fallback and MSRV details."
+---
+
+Crossterm is a pure-Rust, cross-platform terminal library that supports all UNIX-like systems and Windows terminals down to Windows 7. It achieves this broad reach through a single unified API: on UNIX and modern Windows the library writes standard ANSI/VT100 escape sequences, while on older Windows versions it transparently falls back to direct Windows Console API (WinAPI) calls — all without any changes to your application code. The library is also fully multi-threaded: all public types implement `Send + Sync`.
+
+## UNIX vs Windows
+
+<Tabs>
+  <Tab title="UNIX">
+    On Linux, macOS, and other UNIX-like platforms, crossterm writes ANSI escape sequences directly to any `std::io::Write` target. The platform layer relies on `rustix` for low-level terminal operations (raw mode, terminal size, `isatty` checks). Event reading uses `mio` for I/O readiness polling and `signal-hook` for handling `SIGWINCH` resize signals — both are compiled in only when the `events` feature is enabled.
+
+    ANSI support is always available on UNIX; there is no runtime check required. You can write to `stdout`, `stderr`, or any custom buffer.
+  </Tab>
+  <Tab title="Windows 10+">
+    Windows 10 and Windows 11 ship the Virtual Terminal Processing mode, which allows standard ANSI escape sequences to be written to the console. Crossterm enables this mode automatically (via `ENABLE_VIRTUAL_TERMINAL_PROCESSING`) the first time `supports_ansi()` is queried.
+
+    When virtual terminal processing is active, crossterm behaves identically to the UNIX path: ANSI bytes are written into the output buffer and flushed to the terminal. The `crossterm_winapi` and `winapi` crates are always compiled on Windows but are used only for the ANSI-support check and for the WinAPI fallback path.
+  </Tab>
+  <Tab title="Windows 7 / 8 (Legacy)">
+    Terminals on Windows 7 and Windows 8 do not support ANSI escape sequences. For these systems, crossterm's `Command` trait exposes an `execute_winapi` method:
+
+    ```rust
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()>;
+    ```
+
+    When `queue` or `execute` encounters a command whose `is_ansi_code_supported()` returns `false`, it flushes any buffered ANSI output first (to preserve ordering) and then makes the WinAPI call directly. From an application perspective the API is identical — the dispatch is invisible.
+
+    <Note>
+    On legacy Windows, there is no meaningful difference between `queue` and `execute` because WinAPI calls cannot be batched into a write buffer.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Tested Terminals
+
+The following terminals have been actively tested with crossterm. The library aims to support all UNIX terminals and Windows terminals back to Windows 7, but not all have been verified by the project maintainers.
+
+| Terminal | Platform | Notes |
+|---|---|---|
+| **Console Host** | Windows 10 Pro | Fully tested |
+| **Console Host** | Windows 8.1 (N) | Legacy WinAPI path |
+| **Windows Terminal** | Windows 10 x86\_64 Enterprise | Fully tested |
+| **Windows Terminal** | Windows 11 arm64 Enterprise | Fully tested |
+| **GNOME Terminal** | Ubuntu 23.04 64-bit | Fully tested |
+| **GNOME Terminal** | Ubuntu 17.10, Pop!\_OS 20.04 | Fully tested |
+| **KDE Konsole** | Arch Linux, Manjaro | Fully tested |
+| **Kitty** | Arch Linux, NixOS | Fully tested |
+| **Alacritty** | OpenSuse | Fully tested |
+| **Linux Mint** (default terminal) | Linux Mint | Fully tested |
+| **Crostini** | Chrome OS | Fully tested |
+| **macOS Terminal** | macOS Monterey 12.7.1 (Intel) | Fully tested |
+| **macOS Terminal** | macOS Sonoma 14.4 (Apple Silicon M1 Max) | Fully tested |
+
+<Note>
+If you have successfully used crossterm on a terminal not listed above, consider opening a pull request to add it to the README — contributions are very welcome.
+</Note>
+
+## Windows ANSI Support Detection
+
+On Windows, crossterm exposes a dedicated module for checking whether the current terminal supports ANSI escape sequences:
+
+```rust
+// Available on Windows only
+#[cfg(windows)]
+pub mod ansi_support;
+```
+
+The public API is a single function:
+
+```rust
+/// Checks if the current terminal supports ANSI escape sequences.
+/// Available on Windows only (`crossterm::ansi_support::supports_ansi`).
+pub fn supports_ansi() -> bool
+```
+
+Internally it works as follows:
+
+1. **Attempts to enable `ENABLE_VIRTUAL_TERMINAL_PROCESSING`** on the current console output handle via WinAPI. If this succeeds, ANSI is supported.
+2. **Falls back to checking the `TERM` environment variable.** If `TERM` is set to any value other than `"dumb"`, the terminal is treated as ANSI-capable. This covers environments like Git Bash and Cygwin running on Windows where WinAPI VT processing cannot be enabled but the terminal itself understands ANSI codes.
+
+The result is cached in an `AtomicBool` using a `parking_lot::Once`, so the detection runs at most once per process regardless of how many commands are executed.
+
+```rust
+use crossterm::ansi_support; // Windows only
+
+fn main() {
+    if ansi_support::supports_ansi() {
+        println!("ANSI escape codes are supported.");
+    } else {
+        println!("Falling back to WinAPI calls.");
+    }
+}
+```
+
+<Warning>
+`crossterm::ansi_support` is only compiled on Windows. Referencing it in unconditional code will cause a compile error on UNIX. Wrap any direct calls in `#[cfg(windows)]`.
+</Warning>
+
+## The `is_ansi_code_supported` Method
+
+Every `Command` implementor on Windows also has access to a trait method that gates ANSI vs WinAPI dispatch at the per-command level:
+
+```rust
+#[cfg(windows)]
+fn is_ansi_code_supported(&self) -> bool {
+    super::ansi_support::supports_ansi()
+}
+```
+
+The default implementation delegates to `supports_ansi()`. This method is called automatically by `queue` and `execute` — you never need to call it yourself unless you are implementing a custom `Command`.
+
+## Minimum Supported Rust Version (MSRV)
+
+Crossterm requires **Rust 1.85.0** or later. The MSRV applies to the library itself with any combination of public features enabled. Development tooling and examples are not covered by this guarantee.
+
+```toml
+[dependencies]
+crossterm = "0.29"
+# Requires rustc >= 1.85.0
+```
+
+<Note>
+The `edition = "2024"` field in crossterm's `Cargo.toml` reflects the use of the Rust 2024 edition. Make sure your toolchain is up to date if you hit unexpected compilation issues.
+</Note>
+
+## Multi-Threaded Safety
+
+Crossterm is designed for use in multi-threaded applications. All public types implement both `Send` and `Sync`, meaning you can safely share terminal state across threads — for example, in a TUI application where one thread drives input events and another drives rendering.
+
+<Tip>
+When writing to the terminal from multiple threads, coordinate access with a `Mutex` or `RwLock` around the writer to avoid interleaved output. Crossterm's thread safety guarantees apply to its own internal state; it cannot prevent two threads from writing overlapping sequences to the same file descriptor simultaneously.
+</Tip>

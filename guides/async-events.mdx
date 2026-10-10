@@ -1,0 +1,256 @@
+---
+title: "Async Event Streaming with Tokio and smol"
+sidebarTitle: "Async Events"
+description: "How to use crossterm's EventStream to read terminal events asynchronously with Tokio or smol runtimes."
+---
+
+Crossterm's `EventStream` bridges the terminal event system with the Rust async ecosystem. Rather than calling the blocking `read()` function or polling in a tight loop, you receive keyboard, mouse, and resize events through a standard `futures_core::Stream`, which integrates naturally with `select!` macros, async task combinators, and any executor that drives futures — including Tokio and smol. This lets you react to terminal input as one branch of a larger async program without dedicating a thread to blocking I/O.
+
+## Enabling the Feature
+
+`EventStream` is gated behind the `event-stream` feature flag (which also pulls in the `events` feature automatically). Add it to `Cargo.toml` alongside your chosen async runtime:
+
+<Tabs>
+  <Tab title="Tokio">
+    ```toml
+    [dependencies]
+    crossterm = { version = "0.29", features = ["event-stream"] }
+    tokio = { version = "1", features = ["full"] }
+    futures = "0.3"
+    ```
+  </Tab>
+  <Tab title="smol">
+    ```toml
+    [dependencies]
+    crossterm = { version = "0.29", features = ["event-stream"] }
+    smol = "2.0"
+    futures = "0.3"
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  The `futures` crate is needed for `StreamExt` (which adds `.next()` to the
+  stream) and the `select!` macro used in the examples below. The
+  `futures-timer` crate is used in the examples for a runtime-agnostic async
+  sleep.
+</Note>
+
+## `EventStream` Overview
+
+`EventStream` is a struct exported from `crossterm::event`. It implements `futures_core::Stream<Item = std::io::Result<Event>>`, yielding one `Event` per item.
+
+```rust
+use crossterm::event::{Event, EventStream};
+use futures::StreamExt;
+
+let mut reader = EventStream::new();
+
+// Pull the next event from the stream
+while let Some(event) = reader.next().await {
+    match event {
+        Ok(ev) => println!("{ev:?}"),
+        Err(e) => eprintln!("Error: {e}"),
+    }
+}
+```
+
+Key properties of `EventStream`:
+
+- **Runtime-agnostic.** It implements the standard `futures_core::Stream` trait and works with any executor that can poll futures, including Tokio, smol, async-std, and others.
+- **Spawns a background thread.** Internally, `EventStream` parks a worker thread that blocks in `poll_internal` until an event arrives, then wakes the stream's executor task. This means the async task itself is never blocked.
+- **Graceful shutdown on drop.** When the `EventStream` is dropped, it signals the background thread to exit before returning.
+
+## Thread Safety and Mixing with Blocking I/O
+
+<Warning>
+  **Do not mix `EventStream` with `read()` or `poll()`.**
+
+  The event module maintains a single global reader. Calling `read()` or
+  `poll()` while an `EventStream` is alive — even from a different thread —
+  leads to undefined event routing. Pick one approach for your entire program:
+  either use `EventStream` exclusively, or use the synchronous `read()`/`poll()`
+  API exclusively.
+</Warning>
+
+## Tokio Example
+
+The following complete program enables raw mode and mouse capture, then loops over `EventStream` using `futures::select!` to simultaneously wait for a terminal event or a one-second timer.
+
+```rust
+//! cargo run --features="event-stream" --example event-stream-tokio
+
+use std::{io::stdout, time::Duration};
+
+use futures::{StreamExt, future::FutureExt, select};
+use futures_timer::Delay;
+
+use crossterm::{
+    cursor::position,
+    event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
+
+const HELP: &str = r#"EventStream based on futures_util::Stream with tokio
+ - Keyboard, mouse and terminal resize events enabled
+ - Prints "." every second if there's no event
+ - Hit "c" to print current cursor position
+ - Use Esc to quit
+"#;
+
+async fn print_events() {
+    let mut reader = EventStream::new();
+
+    loop {
+        let mut delay = Delay::new(Duration::from_millis(1_000)).fuse();
+        let mut event = reader.next().fuse();
+
+        select! {
+            _ = delay => { println!(".\r"); },
+            maybe_event = event => {
+                match maybe_event {
+                    Some(Ok(event)) => {
+                        println!("Event::{event:?}\r");
+
+                        if event == Event::Key(KeyCode::Char('c').into()) {
+                            println!("Cursor position: {:?}\r", position());
+                        }
+
+                        if event == Event::Key(KeyCode::Esc.into()) {
+                            break;
+                        }
+                    }
+                    Some(Err(e)) => println!("Error: {e:?}\r"),
+                    None => break,
+                }
+            }
+        };
+    }
+}
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    println!("{HELP}");
+
+    enable_raw_mode()?;
+
+    let mut stdout = stdout();
+    execute!(stdout, EnableMouseCapture)?;
+
+    print_events().await;
+
+    execute!(stdout, DisableMouseCapture)?;
+
+    disable_raw_mode()
+}
+```
+
+## smol Example
+
+The smol version is structurally identical. The only differences are that there is no `#[tokio::main]` attribute and the async entry point is driven by `smol::block_on`.
+
+```rust
+//! cargo run --features="event-stream" --example event-stream-smol
+
+use std::{io::stdout, time::Duration};
+
+use futures::{StreamExt, future::FutureExt, select};
+use futures_timer::Delay;
+
+use crossterm::{
+    cursor::position,
+    event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
+
+const HELP: &str = r#"EventStream based on futures_util::stream::Stream with smol
+ - Keyboard, mouse and terminal resize events enabled
+ - Prints "." every second if there's no event
+ - Hit "c" to print current cursor position
+ - Use Esc to quit
+"#;
+
+async fn print_events() {
+    let mut reader = EventStream::new();
+
+    loop {
+        let mut delay = Delay::new(Duration::from_millis(1_000)).fuse();
+        let mut event = reader.next().fuse();
+
+        select! {
+            _ = delay => { println!(".\r"); },
+            maybe_event = event => {
+                match maybe_event {
+                    Some(Ok(event)) => {
+                        println!("Event::{event:?}\r");
+
+                        if event == Event::Key(KeyCode::Char('c').into()) {
+                            println!("Cursor position: {:?}\r", position());
+                        }
+
+                        if event == Event::Key(KeyCode::Esc.into()) {
+                            break;
+                        }
+                    }
+                    Some(Err(e)) => println!("Error: {e:?}\r"),
+                    None => break,
+                }
+            }
+        };
+    }
+}
+
+fn main() -> std::io::Result<()> {
+    println!("{HELP}");
+
+    enable_raw_mode()?;
+
+    let mut stdout = stdout();
+    execute!(stdout, EnableMouseCapture)?;
+
+    smol::block_on(print_events());
+
+    execute!(stdout, DisableMouseCapture)?;
+
+    disable_raw_mode()
+}
+```
+
+## Using `select!` with Other Async Tasks
+
+<Tip>
+  The `select!` macro is the idiomatic way to combine `EventStream` with other
+  concurrent work — for example, polling a network socket, a timer, or a channel
+  at the same time as terminal input. Fuse both futures with `.fuse()` before
+  passing them to `select!` so that a resolved branch does not get polled again.
+
+  ```rust
+  use futures::{StreamExt, future::FutureExt, select};
+  use crossterm::event::{Event, EventStream, KeyCode};
+
+  let mut reader = EventStream::new();
+  let mut my_task = some_async_fn().fuse();
+
+  loop {
+      let mut event = reader.next().fuse();
+      select! {
+          result = my_task => { /* handle task completion */ },
+          maybe_event = event => { /* handle terminal event */ },
+      }
+  }
+  ```
+</Tip>
+
+## Raw Mode Reminder
+
+Terminal events (especially keyboard events) are not delivered until the terminal is placed in **raw mode**, which disables line-buffering and echo. Always call `enable_raw_mode()` before starting the event loop and `disable_raw_mode()` before your program exits — ideally in a way that is panic-safe, such as a `Drop` guard or a `std::panic::catch_unwind` wrapper.
+
+```rust
+use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
+
+enable_raw_mode()?;
+// ... run event loop ...
+disable_raw_mode()?;
+```

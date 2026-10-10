@@ -1,0 +1,174 @@
+---
+title: "execute! and queue! Macros Reference"
+sidebarTitle: "Macros"
+description: "Reference for the execute! and queue! macros that write and flush crossterm commands to any io::Write target."
+---
+
+Crossterm exposes two macros — `execute!` and `queue!` — that provide a concise, low-boilerplate way to send one or more commands to any `io::Write` target. Both macros accept a writer as their first argument followed by an arbitrary number of commands separated by commas, process them in left-to-right order, and return `io::Result<()>`. The key difference is whether they flush: `execute!` always flushes after queuing all commands, while `queue!` writes the ANSI bytes and leaves flushing to you.
+
+---
+
+## `execute!` macro
+
+```
+execute!(writer, Command1, Command2, ...)
+```
+
+`execute!` is the direct-execution counterpart to `queue!`. It calls `QueueableCommand::queue` for each command in order, then calls `Write::flush` on the writer once at the end. The flush is always performed, even when only a single command is passed.
+
+### Signature
+
+```rust
+macro_rules! execute {
+    ($writer:expr $(, $command:expr)* $(,)?) => { ... }
+}
+```
+
+**Returns:** `io::Result<()>`
+
+### Behavior
+
+- Queues every command onto `writer` using `QueueableCommand::queue`.
+- Flushes `writer` once after all commands have been queued.
+- Accepts a trailing comma after the last command.
+- Works with `std::io::stdout()`, `std::io::stderr()`, or any value implementing `io::Write`.
+- On **Windows versions earlier than 10** (no ANSI support), each command triggers an immediate WinAPI call inside `queue`, making `execute!` and `queue!` functionally identical on those systems — see the [Windows behavior note](#windows-behavior) below.
+
+### Example
+
+```rust
+use std::io::stdout;
+use crossterm::{execute, cursor::MoveTo, terminal::{Clear, ClearType}};
+
+fn main() -> std::io::Result<()> {
+    // Both commands are queued, then a single flush is performed.
+    execute!(
+        stdout(),
+        Clear(ClearType::All),
+        MoveTo(0, 0),
+    )?;
+
+    Ok(())
+}
+```
+
+Multiple independent calls to `execute!` each flush individually, so prefer `queue!` plus a manual flush when sending many commands in a loop:
+
+```rust
+use std::io::{self, Write};
+use crossterm::{execute, queue, cursor::MoveTo, style::Print};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Use execute! for the one-off setup command.
+    execute!(stdout, MoveTo(0, 0))?;
+
+    // Use queue! + flush for the hot path.
+    for i in 0..10 {
+        queue!(stdout, Print(format!("line {}\n", i)))?;
+    }
+    stdout.flush()?;
+
+    Ok(())
+}
+```
+
+---
+
+## `queue!` macro
+
+```
+queue!(writer, Command1, Command2, ...)
+```
+
+`queue!` writes the ANSI byte sequences for each command to `writer` in order but **does not flush**. This makes it ideal for high-frequency update loops where you want to accumulate all terminal mutations for a frame and pay the cost of a single `flush` syscall once at the end.
+
+### Signature
+
+```rust
+macro_rules! queue {
+    ($writer:expr $(, $command:expr)* $(,)?) => { ... }
+}
+```
+
+**Returns:** `io::Result<()>`
+
+### Behavior
+
+- Calls `QueueableCommand::queue` for each command in left-to-right order.
+- Does **not** call `Write::flush` — you are responsible for flushing when ready.
+- Accepts a trailing comma after the last command.
+- Works with `std::io::stdout()`, `std::io::stderr()`, or any value implementing `io::Write`.
+- Queued commands are delivered to the terminal when:
+  - You call `Write::flush()` explicitly.
+  - The writer's internal buffer fills up and flushes automatically.
+  - The writer is line-buffered (e.g. `stdout` on some platforms) and a newline is written.
+
+### Example
+
+```rust
+use std::io::{self, Write, stdout};
+use crossterm::{queue, style::Print};
+
+fn main() -> io::Result<()> {
+    let mut stdout = stdout();
+
+    // Nothing is sent to the terminal yet.
+    queue!(stdout, Print("foo".to_string()))?;
+
+    // ... more work ...
+
+    // Now all queued output is flushed in one syscall.
+    stdout.flush()?;
+
+    Ok(())
+}
+```
+
+### Performance-sensitive update loops
+
+In a TUI render loop, calling `execute!` (or `.execute()`) once per command can cause noticeable overhead because each call pays the cost of a `flush`. Use `queue!` to batch the entire frame, then flush once:
+
+```rust
+use std::io::{self, Write};
+use crossterm::{queue, cursor::MoveTo, style::{Print, SetForegroundColor, Color}};
+
+fn render_frame(stdout: &mut impl io::Write, rows: u16) -> io::Result<()> {
+    for row in 0..rows {
+        queue!(
+            stdout,
+            MoveTo(0, row),
+            SetForegroundColor(Color::Green),
+            Print(format!("Row {:>3}", row)),
+        )?;
+    }
+
+    // One flush for the entire frame.
+    stdout.flush()
+}
+```
+
+---
+
+## Windows behavior
+
+<Note>
+  On **Windows versions earlier than 10** that do not have ANSI escape code support, both `execute!` and `queue!` fall back to WinAPI calls and behave identically — each command is executed immediately when it is processed, regardless of whether you called `execute!` or `queue!`. The `flush` step in `execute!` becomes a no-op from the terminal's perspective.
+
+  On **Windows 10+** and all **UNIX** systems, ANSI escape codes are used and the batching semantics described above apply in full.
+</Note>
+
+---
+
+## Comparison: `execute!` vs `queue!`
+
+| Feature | `execute!` | `queue!` |
+|---|---|---|
+| Writes command ANSI bytes | ✅ | ✅ |
+| Flushes after all commands | ✅ Always | ❌ Never |
+| Returns | `io::Result<()>` | `io::Result<()>` |
+| Trailing comma support | ✅ | ✅ |
+| Works with any `io::Write` | ✅ | ✅ |
+| Best for | One-off commands, setup/teardown | Render loops, batched updates |
+| Windows < 10 fallback | WinAPI (immediate) | WinAPI (immediate) |

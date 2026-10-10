@@ -1,0 +1,131 @@
+---
+title: "Feature Flags: Configuring Crossterm Dependencies"
+sidebarTitle: "Feature Flags"
+description: "Overview of crossterm feature flags and how to enable or disable them in your Cargo.toml for a minimal or full build."
+---
+
+Crossterm is designed to be used as either a full-featured terminal library or an extremely thin wrapper, depending on how much of its functionality your project actually needs. Feature flags let you opt in to capabilities like async event streams, serialization, clipboard support, or raw file-descriptor polling while keeping unnecessary compile-time dependencies out of your binary. Two features — `bracketed-paste` and `events` — are enabled by default; everything else is opt-in.
+
+## Feature Reference
+
+### Default Features
+
+These features are active unless you add `default-features = false` to your dependency declaration.
+
+| Feature | What It Enables | Extra Dependencies |
+|---|---|---|
+| `bracketed-paste` | Enables parsing of [`Event::Paste`](https://docs.rs/crossterm/latest/crossterm/event/enum.Event.html#variant.Paste) when the user pastes text into the terminal (requires bracketed-paste mode to be enabled in the terminal). | None |
+| `events` | Enables the entire [`event`](https://docs.rs/crossterm/latest/crossterm/event/index.html) module for reading keyboard, mouse, and resize events from the system. | `mio`, `signal-hook`, `signal-hook-mio` (UNIX only) |
+
+### Optional Features
+
+| Feature | What It Enables | Extra Dependencies |
+|---|---|---|
+| `event-stream` | Exposes [`EventStream`](https://docs.rs/crossterm/latest/crossterm/event/struct.EventStream.html), an async `futures::Stream` that yields `Result<Event>`. Useful with Tokio, async-std, or smol runtimes. Implies `events`. | `futures-core` |
+| `serde` | Derives `Serialize` / `Deserialize` for event types and other public types via the `serde` crate, and enables serde support on `bitflags`-generated types. | `serde` |
+| `use-dev-tty` | Replaces the default `mio`-based event polling with raw file-descriptor polling via `filedescriptor` and `rustix`. Useful for environments where `mio` is undesirable or unavailable. **UNIX only.** | `filedescriptor`, `rustix` (process feature) |
+| `osc52` | Enables the [`clipboard`](https://docs.rs/crossterm/latest/crossterm/clipboard/index.html) module and its `CopyToClipboard` command, which uses OSC 52 escape sequences to copy text to the host clipboard (works over SSH). | `base64` |
+| `document-features` | Injects feature-flag documentation into the crate's rustdoc output via the `document-features` proc-macro. Intended for library maintainers, not end users. | `document-features` |
+
+## Cargo.toml Examples
+
+### Minimal — no event handling
+
+Strip out `mio`, `signal-hook`, and `signal-hook-mio` entirely for a pure terminal-output layer:
+
+```toml
+[dependencies]
+crossterm = { version = "0.29", default-features = false }
+```
+
+<Note>
+With `events` disabled, the `crossterm::event` module is not compiled. You can still use all cursor, style, and terminal commands through the Command API.
+</Note>
+
+### Default (recommended starting point)
+
+```toml
+[dependencies]
+crossterm = "0.29"
+```
+
+Equivalent to explicitly writing:
+
+```toml
+[dependencies]
+crossterm = { version = "0.29", features = ["bracketed-paste", "events"] }
+```
+
+### Async TUI — add `event-stream`
+
+For applications using an async runtime (Tokio, smol, async-std):
+
+```toml
+[dependencies]
+crossterm = { version = "0.29", features = ["event-stream"] }
+```
+
+`event-stream` implies `events`, so you do not need to list both.
+
+### Serialization — add `serde`
+
+If you need to persist, log, or transmit crossterm event types:
+
+```toml
+[dependencies]
+crossterm = { version = "0.29", features = ["serde"] }
+```
+
+### Clipboard over SSH — add `osc52`
+
+```toml
+[dependencies]
+crossterm = { version = "0.29", features = ["osc52"] }
+```
+
+### Full feature set
+
+Enable every optional feature at once:
+
+```toml
+[dependencies]
+crossterm = { version = "0.29", features = [
+    "event-stream",
+    "serde",
+    "use-dev-tty",
+    "osc52",
+] }
+```
+
+<Warning>
+`use-dev-tty` is **UNIX-only**. Adding it to a project that also targets Windows will cause a compile error on Windows hosts. Guard it behind a target-specific dependency if you need cross-platform builds:
+
+```toml
+[target.'cfg(unix)'.dependencies]
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
+```
+</Warning>
+
+## Dependency Impact Summary
+
+Understanding which transitive dependencies each feature pulls in helps you keep your build lean:
+
+| Dependency | Included when |
+|---|---|
+| `bitflags` | Always |
+| `parking_lot` | Always |
+| `rustix` | UNIX always (for terminal size and raw mode) |
+| `mio` | `events` feature, UNIX only |
+| `signal-hook` | `events` feature, UNIX only |
+| `signal-hook-mio` | `events` feature, UNIX only |
+| `filedescriptor` | `use-dev-tty` feature, UNIX only |
+| `crossterm_winapi` | Windows always |
+| `winapi` | Windows always |
+| `futures-core` | `event-stream` feature only |
+| `serde` | `serde` feature only |
+| `base64` | `osc52` feature only |
+| `document-features` | `document-features` feature only |
+
+<Tip>
+To use crossterm as the thinnest possible layer — just ANSI output, no event machinery — disable default features. The only always-present dependencies will then be `bitflags`, `parking_lot`, `rustix` (UNIX), `crossterm_winapi`, and `winapi` (Windows).
+</Tip>

@@ -1,0 +1,208 @@
+---
+title: "Copying to Clipboard with OSC52 in Crossterm"
+sidebarTitle: "Clipboard"
+description: "How to copy text to the system clipboard from the terminal using crossterm's OSC52 clipboard feature."
+---
+
+OSC52 is an ANSI escape sequence (`Pr = 52`) that instructs a terminal emulator to place a base64-encoded string into the host system clipboard, bypassing the need for X11 or Wayland APIs entirely. Because the sequence travels over the same TTY channel used for all other terminal I/O, it works over SSH sessions, inside containers, and anywhere else the terminal's PTY is available — as long as the terminal emulator (and any multiplexer in between) is configured to honour it. Crossterm exposes OSC52 through the `clipboard` module, which is gated behind the optional `osc52` Cargo feature.
+
+## Enabling the Feature
+
+The clipboard API is not compiled in by default. Add the `osc52` feature to your `Cargo.toml` dependency:
+
+```toml
+[dependencies]
+crossterm = { version = "0.29", features = ["osc52"] }
+```
+
+<Note>
+  The `osc52` feature pulls in the `base64` crate, which is used to encode the
+  payload before it is written to the terminal.
+</Note>
+
+## The `CopyToClipboard` Command
+
+`CopyToClipboard<T>` is a crossterm [Command](https://docs.rs/crossterm/latest/crossterm/trait.Command.html) that, when executed or queued, emits the OSC52 escape sequence. It is generic over any type `T: AsRef<[u8]>`, so you can pass a `&str`, a `String`, or raw bytes.
+
+### Struct fields
+
+```rust
+pub struct CopyToClipboard<T> {
+    /// The bytes that will be base64-encoded and sent to the terminal.
+    pub content: T,
+
+    /// Which clipboard buffer(s) should receive the content.
+    pub destination: ClipboardSelection,
+}
+```
+
+### Constructor methods
+
+Two convenience constructors cover the most common destinations:
+
+| Method | Destination | OSC52 `Pc` parameter |
+|---|---|---|
+| `CopyToClipboard::to_clipboard_from(content)` | System clipboard (`Ctrl+C` / `Ctrl+V`) | `c` |
+| `CopyToClipboard::to_primary_from(content)` | Primary selection (middle-click on X/Wayland) | `p` |
+
+```rust
+use crossterm::clipboard::CopyToClipboard;
+use crossterm::execute;
+use std::io;
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Copy a string to the system clipboard
+    execute!(stdout, CopyToClipboard::to_clipboard_from("Hello, clipboard!"))?;
+
+    // Copy a string to the primary (middle-click) selection
+    execute!(stdout, CopyToClipboard::to_primary_from("Hello, primary!"))?;
+
+    Ok(())
+}
+```
+
+You can also build the struct directly when you need a custom `ClipboardSelection`:
+
+```rust
+use crossterm::clipboard::{ClipboardSelection, ClipboardType, CopyToClipboard};
+use crossterm::execute;
+use std::io;
+
+fn main() -> io::Result<()> {
+    execute!(
+        io::stdout(),
+        CopyToClipboard {
+            content: String::from("Custom destination"),
+            destination: ClipboardSelection(vec![ClipboardType::Clipboard]),
+        }
+    )
+}
+```
+
+### Full example (from `examples/copy-to-clipboard.rs`)
+
+```rust
+use std::io;
+
+use crossterm::clipboard;
+use crossterm::execute;
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+    let mut args = std::env::args();
+    args.next(); // skip program name
+
+    let default_text = String::from("Example text");
+    let (text, dest) = match args.next().as_deref() {
+        Some("--clipboard") => (
+            args.next().unwrap_or(default_text),
+            clipboard::ClipboardType::Clipboard,
+        ),
+        Some("--primary") => (
+            args.next().unwrap_or(default_text),
+            clipboard::ClipboardType::Primary,
+        ),
+        Some(text) => (text.to_owned(), clipboard::ClipboardType::Clipboard),
+        None => (default_text, clipboard::ClipboardType::Clipboard),
+    };
+
+    execute!(
+        stdout,
+        clipboard::CopyToClipboard {
+            content: text,
+            destination: clipboard::ClipboardSelection(vec![dest]),
+        }
+    )
+}
+```
+
+Run it with:
+
+```bash
+cargo run --example copy-to-clipboard --features osc52 -- --clipboard "Some String"
+cargo run --example copy-to-clipboard --features osc52 -- --primary "Some String"
+cargo run --example copy-to-clipboard --features osc52 -- "Some String"
+```
+
+## `ClipboardType` Enum
+
+`ClipboardType` identifies a single clipboard buffer. Some operating systems and desktop environments support multiple independent buffers for copy/paste.
+
+```rust
+pub enum ClipboardType {
+    /// Default clipboard used by Ctrl+C / Ctrl+V.
+    /// Encoded as 'c' in the OSC52 sequence.
+    Clipboard,
+
+    /// Primary selection on Linux/X/Wayland (middle mouse button).
+    /// Encoded as 'p' in the OSC52 sequence.
+    Primary,
+
+    /// Any other clipboard type not explicitly supported by crossterm.
+    /// See XTerm Control Sequences for potential values.
+    /// Support in terminal emulators is very limited.
+    Other(char),
+}
+```
+
+`char` conversions are implemented in both directions:
+
+| `ClipboardType` | `char` |
+|---|---|
+| `Clipboard` | `'c'` |
+| `Primary` | `'p'` |
+| `Other(ch)` | `ch` |
+
+## `ClipboardSelection` — Ordering Matters
+
+`ClipboardSelection` wraps an ordered `Vec<ClipboardType>`. Each element becomes one character in the OSC52 `Pc` parameter field (e.g. `"cp"` targets clipboard first, then primary).
+
+```rust
+pub struct ClipboardSelection(pub Vec<ClipboardType>);
+```
+
+The order is significant because some terminal emulators deviate from the XTerm spec and only act on the **first** character of the `Pc` field. For example, sending `"cp"` to Alacritty fills only the clipboard, while sending `"pc"` fills only the primary selection. Terminals that follow the spec (xterm, Konsole, foot, tmux with pass-through) fill all listed buffers regardless of order.
+
+## Terminal Support Matrix
+
+The table below, sourced directly from the crossterm source, documents what each terminal actually copies when asked to target different destination sequences. All tests were run on Wayland with the primary selection protocol enabled.
+
+| Terminal (Version) | dest `''` | dest `'c'` | dest `'p'` | dest `'cp'` | dest `'pc'` |
+|---|---|---|---|---|---|
+| xterm (397) | primary | clipboard | primary | clipb., prim. | clipb., prim. |
+| Alacritty (0.15.1) | clipboard | clipboard | primary | **clipb. only** | **prim. only** |
+| WezTerm (20240203) | clipboard | clipboard | primary | **clipb. only** | **clipb. only** |
+| Konsole (24.12.3) | clipboard | clipboard | primary | clipb., prim. | clipb., prim. |
+| Kitty (0.40.0) | clipboard | clipboard | primary | **clipb. only** | **clipb. only** |
+| foot (1.20.2) | clipboard | clipboard | primary | clipb., prim. | clipb., prim. |
+| tmux (3.5a) ¹ | primary | clipboard | primary | clipb., prim. | clipb., prim. |
+
+¹ tmux tested with `set-clipboard external` (OSC52 pass-through mode).
+
+<Tip>
+  If you need to reliably target **both** buffers across all terminals, prefer
+  `dest 'c'` for the clipboard and issue a second `dest 'p'` command for the
+  primary selection rather than relying on `'cp'`/`'pc'` combined destinations.
+</Tip>
+
+## Limitations
+
+<Warning>
+  **Windows WinAPI is not supported.** On Windows, `CopyToClipboard` always
+  returns an `io::Error` with `ErrorKind::Unsupported`. The OSC52 sequence is
+  only effective when the terminal emulator itself implements it; use a
+  Windows-native clipboard API for Windows targets.
+</Warning>
+
+- **Terminal emulator support is required.** If the terminal does not recognise OSC52, the sequence is silently ignored and nothing is copied.
+- **Multiplexers must also support it.** When running inside tmux, screen, or another multiplexer, the multiplexer must be configured to pass the sequence through to the outer terminal. For tmux, set `set-clipboard external` in your `tmux.conf`:
+
+  ```bash
+  # tmux.conf
+  set -g set-clipboard external
+  ```
+
+  With the default `set-clipboard on`, tmux handles OSC52 internally and may not relay it to the host terminal. With `set-clipboard off`, OSC52 is blocked entirely.
+- **No read-back.** The OSC52 spec also allows querying the current clipboard contents, but crossterm only implements the write direction.

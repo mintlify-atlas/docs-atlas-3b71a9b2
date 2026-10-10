@@ -1,0 +1,276 @@
+---
+title: "Controlling the Terminal Cursor with Crossterm"
+sidebarTitle: "Cursor"
+description: "Learn how to move, show, hide, blink, and change the shape of the terminal cursor using crossterm cursor commands and the execute! macro."
+---
+
+The `crossterm::cursor` module gives you precise, cross-platform control over every aspect of the terminal cursor — its position, visibility, blink state, and shape. All cursor operations are expressed as **commands** that are either executed immediately with the `execute!` macro (which flushes the underlying writer) or batched for later with `queue!` (which lets you control exactly when the output is flushed). This design keeps performance in your hands while providing a clean, composable API that works uniformly on UNIX and Windows terminals.
+
+<Note>
+Every command in this guide must be **executed or queued** before it takes effect. Constructing a command struct alone does nothing — you must pass it to `execute!`, `queue!`, or call `.execute()` / `.queue()` on a writer that implements `std::io::Write`.
+</Note>
+
+## Movement Commands
+
+Crossterm provides a rich set of structs for repositioning the cursor. Absolute commands take 0-indexed coordinates where `(0, 0)` is the top-left cell of the terminal. Relative commands are 1-based, meaning a count of `1` moves exactly one cell.
+
+| Command | Signature | Description |
+|---|---|---|
+| `MoveTo` | `MoveTo(col: u16, row: u16)` | Move to an absolute position. `(0, 0)` is top-left. |
+| `MoveUp` | `MoveUp(n: u16)` | Move up `n` rows. |
+| `MoveDown` | `MoveDown(n: u16)` | Move down `n` rows. |
+| `MoveLeft` | `MoveLeft(n: u16)` | Move left `n` columns. |
+| `MoveRight` | `MoveRight(n: u16)` | Move right `n` columns. |
+| `MoveToNextLine` | `MoveToNextLine(n: u16)` | Move down `n` lines and go to column 0. |
+| `MoveToPreviousLine` | `MoveToPreviousLine(n: u16)` | Move up `n` lines and go to column 0. |
+| `MoveToColumn` | `MoveToColumn(col: u16)` | Move to column `col` on the current row (0-indexed). |
+| `MoveToRow` | `MoveToRow(row: u16)` | Move to row `row` on the current column (0-indexed). |
+
+<Tabs>
+  <Tab title="execute! (immediate)">
+    ```rust
+    use std::io::{self, Write};
+
+    use crossterm::{
+        execute,
+        cursor::{MoveTo, MoveUp, MoveDown, MoveLeft, MoveRight, MoveToNextLine, MoveToPreviousLine, MoveToColumn, MoveToRow},
+    };
+
+    fn main() -> io::Result<()> {
+        let mut stdout = io::stdout();
+
+        // Absolute: move to column 10, row 5
+        execute!(stdout, MoveTo(10, 5))?;
+
+        // Relative: move up 2 rows, then right 4 columns
+        execute!(stdout, MoveUp(2), MoveRight(4))?;
+
+        // Move to start of next line (like a carriage-return + newline)
+        execute!(stdout, MoveToNextLine(1))?;
+
+        // Move to start of the previous line
+        execute!(stdout, MoveToPreviousLine(1))?;
+
+        // Move to column 0 on the current row
+        execute!(stdout, MoveToColumn(0))?;
+
+        // Move to row 0 on the current column
+        execute!(stdout, MoveToRow(0))?;
+
+        Ok(())
+    }
+    ```
+  </Tab>
+  <Tab title="queue! (batched)">
+    ```rust
+    use std::io::{self, Write};
+
+    use crossterm::{
+        queue,
+        cursor::{MoveTo, MoveDown, MoveRight},
+    };
+
+    fn main() -> io::Result<()> {
+        let mut stdout = io::stdout();
+
+        // Queue several movements without flushing yet
+        queue!(stdout, MoveTo(0, 0))?;
+        queue!(stdout, MoveDown(3))?;
+        queue!(stdout, MoveRight(8))?;
+
+        // All three commands are sent to the terminal in one flush
+        stdout.flush()?;
+
+        Ok(())
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+`MoveToNextLine(n)` and `MoveToPreviousLine(n)` both reset the column to 0, making them useful for drawing line-by-line output without tracking the column position yourself.
+</Tip>
+
+## Save and Restore Position
+
+`SavePosition` stores the current cursor location globally, and `RestorePosition` jumps back to it. This is ideal for drawing decorations or status messages in a fixed location while the main output flows elsewhere.
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute,
+    cursor::{SavePosition, RestorePosition, MoveTo},
+};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Save the current position, move somewhere else, then come back
+    execute!(
+        stdout,
+        SavePosition,
+        MoveTo(40, 10),
+        // ... draw something at (40, 10) ...
+        RestorePosition
+    )?;
+
+    Ok(())
+}
+```
+
+<Warning>
+The cursor position is stored **globally** in the terminal, not inside your process. If another part of your program (or a library) calls `SavePosition` before you call `RestorePosition`, the saved position will be overwritten.
+</Warning>
+
+## Cursor Visibility
+
+Use `Hide` and `Show` to toggle cursor visibility. Hiding the cursor during screen redraws eliminates the distracting flicker caused by the cursor jumping across cells.
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute,
+    cursor::{Hide, Show},
+};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Hide the cursor before a complex redraw
+    execute!(stdout, Hide)?;
+
+    // ... render your TUI frames here ...
+
+    // Restore cursor visibility when done
+    execute!(stdout, Show)?;
+
+    Ok(())
+}
+```
+
+<Warning>
+Always restore cursor visibility before your application exits. If the program terminates while the cursor is hidden, the user's terminal will appear broken until they restart it or run `reset`.
+</Warning>
+
+## Cursor Blinking
+
+`EnableBlinking` and `DisableBlinking` control whether the cursor blinks.
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute,
+    cursor::{EnableBlinking, DisableBlinking},
+};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    execute!(stdout, EnableBlinking)?;
+    // ... cursor now blinks ...
+    execute!(stdout, DisableBlinking)?;
+
+    Ok(())
+}
+```
+
+<Note>
+Some UNIX terminals (such as GNOME Terminal and Konsole) and Windows versions lower than Windows 10 do not support `EnableBlinking` / `DisableBlinking`. For better cross-platform compatibility, use `SetCursorStyle` instead, which controls both shape and blink state in a single command.
+</Note>
+
+## Cursor Style
+
+`SetCursorStyle` is an enum that sets both the **shape** and the **blink behaviour** of the cursor in one command, offering wider compatibility than the dedicated `EnableBlinking` / `DisableBlinking` structs.
+
+| Variant | Shape | Blinks |
+|---|---|---|
+| `DefaultUserShape` | Terminal default | Terminal default |
+| `BlinkingBlock` | Block (■) | Yes |
+| `SteadyBlock` | Block (■) | No |
+| `BlinkingUnderScore` | Underscore (_) | Yes |
+| `SteadyUnderScore` | Underscore (_) | No |
+| `BlinkingBar` | Bar (\|) | Yes |
+| `SteadyBar` | Bar (\|) | No |
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    execute,
+    cursor::SetCursorStyle,
+};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Switch to a steady (non-blinking) bar — common in text editors
+    execute!(stdout, SetCursorStyle::SteadyBar)?;
+
+    // Switch to a blinking block — the classic terminal look
+    execute!(stdout, SetCursorStyle::BlinkingBlock)?;
+
+    // Restore the user's configured default
+    execute!(stdout, SetCursorStyle::DefaultUserShape)?;
+
+    Ok(())
+}
+```
+
+<CodeGroup>
+```rust Normal editing mode
+use crossterm::{execute, cursor::SetCursorStyle};
+use std::io;
+
+fn enter_insert_mode() -> io::Result<()> {
+    execute!(io::stdout(), SetCursorStyle::BlinkingBar)
+}
+```
+
+```rust Normal mode (Vim-style)
+use crossterm::{execute, cursor::SetCursorStyle};
+use std::io;
+
+fn enter_normal_mode() -> io::Result<()> {
+    execute!(io::stdout(), SetCursorStyle::SteadyBlock)
+}
+```
+</CodeGroup>
+
+## Querying Cursor Position
+
+When you need to know where the cursor is right now — for example, to calculate relative movements — use `cursor::position()`. This function returns the current `(column, row)` as a `(u16, u16)` tuple.
+
+<Note>
+`cursor::position()` is only available when the `events` feature is enabled in your `Cargo.toml`:
+
+```toml
+[dependencies]
+crossterm = { version = "*", features = ["events"] }
+```
+</Note>
+
+```rust
+#[cfg(feature = "events")]
+use crossterm::cursor;
+use crossterm::{execute, cursor::MoveTo};
+use std::io;
+
+#[cfg(feature = "events")]
+fn main() -> io::Result<()> {
+    // Read the current cursor position
+    let (col, row) = cursor::position()?;
+    println!("Cursor is at column {col}, row {row}");
+
+    // Move 5 columns to the right relative to where we are
+    execute!(io::stdout(), MoveTo(col + 5, row))?;
+
+    Ok(())
+}
+```
+
+<Tip>
+Pair `cursor::position()` with `SavePosition` / `RestorePosition` to implement robust bookmark-and-return patterns: read the position once to know what you saved, then use `RestorePosition` to jump back efficiently without a second query.
+</Tip>

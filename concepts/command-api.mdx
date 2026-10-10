@@ -1,0 +1,269 @@
+---
+title: "The Command API: Queuing and Executing Terminal Commands"
+sidebarTitle: "Command API"
+description: "How the crossterm Command API works with lazy queue and direct execute modes for efficient terminal manipulation."
+---
+
+The Command API is the heart of crossterm's design. Rather than exposing raw escape sequences or platform-specific system calls, crossterm wraps every terminal action — cursor movement, color changes, screen clearing, and more — into a **command**: a small, self-describing value that knows how to apply itself to any `std::io::Write` target. This abstraction gives you complete control over *when* output is flushed, *where* it is written, and *how* it adapts to the underlying platform, all without boilerplate.
+
+## What is a Command?
+
+A command is any type that implements the `Command` trait from `crossterm::command`. The trait has two methods:
+
+```rust
+pub trait Command {
+    /// Write an ANSI representation of this command to the given writer.
+    /// Supported on all UNIX systems and Windows 10+.
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result;
+
+    /// Execute this command via a direct WinAPI call.
+    /// Only compiled on Windows; used for older Windows versions that
+    /// do not support ANSI escape codes.
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()>;
+
+    /// Returns whether the ANSI representation is supported on this Windows
+    /// terminal. Defaults to calling `ansi_support::supports_ansi()`.
+    #[cfg(windows)]
+    fn is_ansi_code_supported(&self) -> bool {
+        super::ansi_support::supports_ansi()
+    }
+}
+```
+
+On UNIX and Windows 10+, `write_ansi` encodes the command as a VT100/ANSI byte sequence and writes it into the output buffer. On older Windows, `execute_winapi` is called instead, making direct Windows Console API calls. You never have to call these methods yourself — the `queue`/`execute` machinery handles the dispatch automatically.
+
+<Note>
+You rarely need to implement `Command` yourself. Crossterm ships a full set of ready-made commands across the `cursor`, `style`, `terminal`, `event`, and `clipboard` modules.
+</Note>
+
+## Two Execution Modes
+
+Every command reaches the terminal through one of two paths: **lazy** (queued, flushed later) or **direct** (flushed immediately). Both paths accept any writer that implements `std::io::Write`, including `stdout()`, `stderr()`, or your own buffer.
+
+<Tabs>
+  <Tab title="Lazy Execution (queue)">
+    Queuing writes the ANSI bytes into the writer's internal buffer but does **not** flush. Call `Write::flush` when you are ready to send everything at once. This is the preferred approach for TUI applications that repaint many cells per frame, because a single `flush` syscall is far cheaper than one per command.
+
+    **Method style** — chain `.queue()` calls and flush explicitly:
+
+    ```rust
+    use crossterm::{
+        QueueableCommand,
+        cursor::MoveTo,
+        terminal::{Clear, ClearType},
+    };
+    use std::io::{Write, stdout};
+
+    fn main() -> std::io::Result<()> {
+        let mut stdout = stdout();
+
+        stdout.queue(MoveTo(5, 5))?;
+        // Queue more commands before flushing ...
+        stdout.flush()?;
+        Ok(())
+    }
+    ```
+
+    Chain multiple commands before the flush:
+
+    ```rust
+    use crossterm::{QueueableCommand, cursor::MoveTo, terminal::{Clear, ClearType}};
+    use std::io::stdout;
+
+    fn main() -> std::io::Result<()> {
+        let mut stdout = stdout();
+        stdout.queue(MoveTo(5, 5))?.queue(Clear(ClearType::All))?;
+        Ok(())
+    }
+    ```
+
+    **Macro style** — pass multiple commands to `queue!` in one call:
+
+    ```rust
+    use crossterm::{queue, cursor::MoveTo, terminal::{Clear, ClearType}};
+    use std::io::{stdout, Write};
+
+    fn main() -> std::io::Result<()> {
+        let mut stdout = stdout();
+        queue!(stdout, MoveTo(5, 5), Clear(ClearType::All))?;
+
+        // ... more work ...
+
+        stdout.flush()?;
+        Ok(())
+    }
+    ```
+  </Tab>
+  <Tab title="Direct Execution (execute)">
+    Direct execution writes the ANSI bytes **and** calls `flush` in one step. This is convenient when you only send a handful of commands and the cost of an immediate flush is negligible.
+
+    **Method style** — `.execute()` writes and flushes atomically:
+
+    ```rust
+    use crossterm::{
+        ExecutableCommand,
+        cursor::MoveTo,
+        terminal::{Clear, ClearType},
+    };
+    use std::io::stdout;
+
+    fn main() -> std::io::Result<()> {
+        let mut stdout = stdout();
+        stdout.execute(MoveTo(5, 5))?;
+        Ok(())
+    }
+    ```
+
+    Chain multiple execute calls — each flushes individually:
+
+    ```rust
+    use crossterm::{ExecutableCommand, cursor::MoveTo, terminal::{Clear, ClearType}};
+    use std::io::stdout;
+
+    fn main() -> std::io::Result<()> {
+        let mut stdout = stdout();
+        stdout
+            .execute(MoveTo(5, 5))?
+            .execute(Clear(ClearType::All))?;
+        Ok(())
+    }
+    ```
+
+    **Macro style** — pass multiple commands; `execute!` queues them all, then flushes once:
+
+    ```rust
+    use crossterm::{execute, cursor::MoveTo, terminal::{Clear, ClearType}};
+    use std::io::stdout;
+
+    fn main() -> std::io::Result<()> {
+        let mut stdout = stdout();
+        execute!(stdout, MoveTo(5, 5), Clear(ClearType::All))?;
+        Ok(())
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Methods vs Macros
+
+Both approaches are equivalent at runtime. Choose based on your style preference:
+
+| | Methods (`.queue()` / `.execute()`) | Macros (`queue!` / `execute!`) |
+|---|---|---|
+| **Import** | `use crossterm::{QueueableCommand, ExecutableCommand}` | `use crossterm::{queue, execute}` |
+| **Multiple commands** | Chain with `?` operator | Comma-separated list in one call |
+| **IDE support** | Full autocomplete and inline docs | May vary by editor |
+| **Trailing comma** | N/A | Supported (`queue!(w, CmdA, CmdB,)`) |
+| **Error propagation** | Per-call `?` | Single `?` on the macro invocation |
+
+The macro form is especially ergonomic when sending many commands together:
+
+```rust
+use crossterm::{
+    execute, queue,
+    cursor,
+    style::{self, Stylize},
+    terminal,
+};
+use std::io::{self, Write};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Clear the screen once (direct — only one command)
+    execute!(stdout, terminal::Clear(terminal::ClearType::All))?;
+
+    // Draw a magenta rectangle using lazy queuing for performance
+    for y in 0..40 {
+        for x in 0..150 {
+            if (y == 0 || y == 40 - 1) || (x == 0 || x == 150 - 1) {
+                queue!(
+                    stdout,
+                    cursor::MoveTo(x, y),
+                    style::PrintStyledContent("█".magenta())
+                )?;
+            }
+        }
+    }
+    stdout.flush()?;
+    Ok(())
+}
+```
+
+## Chaining Commands
+
+Both `.queue()` and `.execute()` return `io::Result<&mut Self>`, so you can chain as many commands as you need with the `?` operator:
+
+```rust
+use crossterm::{QueueableCommand, ExecutableCommand, cursor::MoveTo, style::Print};
+use std::io::stdout;
+
+fn main() -> std::io::Result<()> {
+    let mut stdout = stdout();
+
+    // Chain queue calls — all buffered, one flush at the end
+    stdout
+        .queue(MoveTo(0, 0))?
+        .queue(Print("Hello, "))?
+        .queue(MoveTo(7, 0))?
+        .queue(Print("world!"))?;
+
+    std::io::Write::flush(&mut stdout)?;
+    Ok(())
+}
+```
+
+<Tip>
+Because the method returns `&mut Self`, you can store the result of the first `.queue()` and keep calling it in a loop — no need to rebind the variable.
+</Tip>
+
+## Synchronized Updates
+
+The `SynchronizedUpdate` trait provides a higher-level wrapper that suppresses terminal rendering for the duration of a batch of commands and then reveals all changes atomically. This eliminates the visual tearing that can occur when a terminal renders a partially-updated screen.
+
+```rust
+pub trait SynchronizedUpdate {
+    /// Performs a set of actions against the given type.
+    fn sync_update<T>(&mut self, operations: impl FnOnce(&mut Self) -> T) -> io::Result<T>;
+}
+```
+
+Under the hood, `sync_update` queues `BeginSynchronizedUpdate` before the closure and calls `execute(EndSynchronizedUpdate)` after, which flushes the entire batch at once:
+
+```rust
+use crossterm::{ExecutableCommand, SynchronizedUpdate, style::Print};
+use std::io;
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    stdout.sync_update(|stdout| {
+        stdout.execute(Print("foo 1\n".to_string()))?;
+        stdout.execute(Print("foo 2".to_string()))?;
+        // Both prints are buffered in the terminal but not yet visible.
+        std::io::Result::Ok(())
+    })?;
+
+    // All effects become visible here after the synchronized update ends.
+    Ok(())
+}
+```
+
+<Note>
+`SynchronizedUpdate` works only on terminals that support the synchronized output extension. On unsupported terminals the commands are no-ops, so the code is still correct — just without the tearing-prevention guarantee.
+</Note>
+
+## Performance Tips
+
+<Tip>
+**Prefer `queue` in tight loops.** Each `execute` call triggers a `flush`, which is a syscall. When updating dozens or hundreds of cells per frame, accumulate all commands with `queue!` / `.queue()` and flush once at the end of the frame.
+</Tip>
+
+<Tip>
+**Prefer `execute` for infrequent one-off commands.** Entering an alternate screen, setting the terminal title, or enabling mouse capture happen at most once per session — the cost of an immediate flush is irrelevant.
+</Tip>
+
+<Warning>
+On Windows versions older than Windows 10, ANSI codes are not supported. When `queue` encounters a command whose `is_ansi_code_supported()` returns `false`, it flushes any pending ANSI bytes first and then makes the WinAPI call directly. This preserves ordering but means `queue` and `execute` are effectively identical in that scenario.
+</Warning>

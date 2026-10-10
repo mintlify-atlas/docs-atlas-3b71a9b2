@@ -1,0 +1,73 @@
+---
+title: "Crossterm API Reference Overview"
+sidebarTitle: "Overview"
+description: "Complete overview of the crossterm public API surface, organized by module with links to detailed references."
+---
+
+Crossterm is a pure-Rust, cross-platform terminal manipulation library that targets all UNIX systems and Windows terminals down to Windows 7. Its public API is organized into focused modules — each covering a distinct concern such as cursor movement, text styling, or event reading — all unified by a small set of root-level traits and macros that form the [Command API](/api/traits). Every action the library can perform is expressed as a `Command`: a value that knows how to write its ANSI escape sequence (or fall back to a WinAPI call on older Windows) and can be queued for batched output or executed immediately.
+
+## Modules
+
+<CardGroup cols={2}>
+  <Card title="cursor" icon="arrow-pointer" href="/api/cursor">
+    Cursor movement, visibility, blinking, and style. Includes commands such as `MoveTo`, `Hide`, `Show`, `SavePosition`, `RestorePosition`, and `SetCursorStyle`.
+  </Card>
+  <Card title="style" icon="palette" href="/api/style">
+    Foreground and background colors, text attributes, styled content printing, and terminal hyperlinks. Includes `SetForegroundColor`, `SetBackgroundColor`, `SetAttribute`, `PrintStyledContent`, `StartHyperlink`, and more.
+  </Card>
+  <Card title="event" icon="bolt" href="/api/event">
+    Keyboard, mouse, and terminal focus events. Includes `EnableMouseCapture`, `DisableMouseCapture`, `PushKeyboardEnhancementFlags`, and `PopKeyboardEnhancementFlags`. Requires the `events` feature flag.
+  </Card>
+  <Card title="terminal" icon="terminal" href="/api/terminal">
+    Raw mode, alternate screen, terminal size, scrolling, clearing, and line-wrap control. Includes `EnterAlternateScreen`, `LeaveAlternateScreen`, `Clear`, `SetSize`, `ScrollUp`, and `ScrollDown`.
+  </Card>
+  <Card title="clipboard" icon="clipboard" href="/api/clipboard">
+    OSC 52 clipboard copy support. Exposes the `CopyToClipboard` command. Requires the `osc52` feature flag — enable it in `Cargo.toml` with `features = ["osc52"]`.
+  </Card>
+</CardGroup>
+
+## Root-level exports
+
+Crossterm re-exports the following items directly from the crate root so that the most commonly needed types are available without deep module paths.
+
+### Traits
+
+| Item | Description |
+|---|---|
+| [`Command`](/api/traits#command-trait) | The core trait every terminal action implements. Defines how an action is written as an ANSI sequence or executed via WinAPI. |
+| [`QueueableCommand`](/api/traits#queueablecommand-trait) | Extends any `io::Write` with a `.queue()` method that buffers a command without flushing. |
+| [`ExecutableCommand`](/api/traits#executablecommand-trait) | Extends any `io::Write` with an `.execute()` method that writes a command and immediately flushes. |
+| [`SynchronizedUpdate`](/api/traits#synchronizedupdate-trait) | Extends any `io::Write` with a `.sync_update()` method that wraps a batch of operations in `BeginSynchronizedUpdate`/`EndSynchronizedUpdate` to prevent screen tearing. |
+
+### Macros
+
+| Item | Description |
+|---|---|
+| [`execute!`](/api/macros#execute-macro) | Accepts a writer and one or more commands, queues them all, then flushes. Returns `io::Result<()>`. |
+| [`queue!`](/api/macros#queue-macro) | Accepts a writer and one or more commands, writes their ANSI bytes, but does **not** flush. Returns `io::Result<()>`. |
+
+## Versioning
+
+<Note>
+  The current release is **crossterm 0.29.0**. Add it to your project with:
+
+  ```toml
+  [dependencies]
+  crossterm = "0.29.0"
+  ```
+
+  To enable optional features (e.g. clipboard or event support):
+
+  ```toml
+  [dependencies]
+  crossterm = { version = "0.29.0", features = ["osc52", "events"] }
+  ```
+</Note>
+
+## Auto-generated rustdoc
+
+Complete, version-pinned rustdoc for every public type, struct, enum, and function is available on **docs.rs**:
+
+<Card title="crossterm on docs.rs" icon="book" href="https://docs.rs/crossterm/0.29.0/crossterm/">
+  Browse the full auto-generated API documentation at docs.rs/crossterm.
+</Card>

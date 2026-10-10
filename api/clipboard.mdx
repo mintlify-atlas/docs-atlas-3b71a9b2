@@ -1,0 +1,217 @@
+---
+title: "clipboard Module API Reference — Crossterm"
+sidebarTitle: "clipboard"
+description: "API reference for the crossterm clipboard module — OSC 52 clipboard commands, CopyToClipboard, ClipboardType, and ClipboardSelection."
+---
+
+The `clipboard` module provides a way to copy arbitrary bytes to the host system clipboard via the terminal using the [OSC 52](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands) control sequence (`Pr = 5 2`). The terminal emulator intercepts the sequence and writes the Base64-decoded payload to the requested clipboard selection. This enables clipboard access without direct OS API calls, making it useful in remote SSH sessions, containers, and other environments where native clipboard APIs are unavailable.
+
+<Note>
+  The `clipboard` module requires the **`osc52`** Cargo feature. Add it to your `Cargo.toml`:
+
+  ```toml
+  crossterm = { version = "...", features = ["osc52"] }
+  ```
+
+  If a terminal multiplexer (e.g., tmux) is in use, it must also support OSC 52 pass-through for this to work. See the [terminal support table](#terminal-support) below.
+</Note>
+
+<Warning>
+  The Windows legacy API (`execute_winapi`) does **not** support clipboard operations and returns `io::ErrorKind::Unsupported`. This feature works exclusively through ANSI/OSC sequences on modern terminals.
+</Warning>
+
+---
+
+## CopyToClipboard Struct
+
+```rust
+pub struct CopyToClipboard<T> {
+    pub content:     T,
+    pub destination: ClipboardSelection,
+}
+// where T: AsRef<[u8]>
+```
+
+A command that copies `content` to the clipboard selections specified by `destination`. The content is Base64-encoded and sent as an OSC 52 sequence.
+
+<ResponseField name="content" type="T: AsRef<[u8]>">
+  The raw bytes to copy. Accepts `&str`, `String`, `&[u8]`, `Vec<u8>`, or any type that implements `AsRef<[u8]>`.
+</ResponseField>
+<ResponseField name="destination" type="ClipboardSelection">
+  An ordered list of clipboard destinations. See [`ClipboardSelection`](#clipboardselection-struct) for details on how ordering affects behavior.
+</ResponseField>
+
+### Constructor Methods
+
+#### `to_clipboard_from`
+
+```rust
+pub fn to_clipboard_from(content: T) -> CopyToClipboard<T>
+```
+
+Constructs a `CopyToClipboard` targeting the default **clipboard** selection (`'c'`). This corresponds to the clipboard you interact with via Ctrl+C / Ctrl+V on most platforms.
+
+```rust
+use crossterm::clipboard::CopyToClipboard;
+use crossterm::execute;
+
+execute!(
+    std::io::stdout(),
+    CopyToClipboard::to_clipboard_from("Hello, clipboard!"),
+)?;
+```
+
+---
+
+#### `to_primary_from`
+
+```rust
+pub fn to_primary_from(content: T) -> CopyToClipboard<T>
+```
+
+Constructs a `CopyToClipboard` targeting the **primary** selection (`'p'`). On Linux/X11/Wayland, the primary selection is the text most recently highlighted with the mouse; it is pasted with the middle mouse button.
+
+```rust
+use crossterm::clipboard::CopyToClipboard;
+use crossterm::execute;
+
+execute!(
+    std::io::stdout(),
+    CopyToClipboard::to_primary_from("Selected text"),
+)?;
+```
+
+---
+
+### Custom Destination
+
+You can build a `CopyToClipboard` targeting multiple destinations simultaneously by constructing the value directly:
+
+```rust
+use crossterm::clipboard::{ClipboardSelection, ClipboardType, CopyToClipboard};
+use crossterm::execute;
+
+let selection = ClipboardSelection(vec![
+    ClipboardType::Clipboard,
+    ClipboardType::Primary,
+]);
+
+execute!(
+    std::io::stdout(),
+    CopyToClipboard {
+        content: "both destinations",
+        destination: selection,
+    },
+)?;
+```
+
+---
+
+## ClipboardType Enum
+
+```rust
+pub enum ClipboardType {
+    Clipboard,
+    Primary,
+    Other(char),
+}
+```
+
+Identifies a single clipboard buffer. Corresponds to the characters in the OSC 52 `Pc` parameter string.
+
+| Variant | OSC 52 char | Description |
+|---|---|---|
+| `Clipboard` | `'c'` | Standard clipboard (Ctrl+C / Ctrl+V) |
+| `Primary` | `'p'` | Primary selection (Linux/X11/Wayland only) |
+| `Other(char)` | any other `char` | Extension types defined by the terminal; support is very limited |
+
+**Trait implementations:**
+
+- `From<char> for ClipboardType` — `'c'` → `Clipboard`, `'p'` → `Primary`, anything else → `Other(char)`
+- `From<&ClipboardType> for char` — the reverse conversion
+
+---
+
+## ClipboardSelection Struct
+
+```rust
+pub struct ClipboardSelection(pub Vec<ClipboardType>);
+```
+
+An ordered list of `ClipboardType` values that specifies one or more clipboard destinations for a copy operation. The order can matter because some terminal emulators only interpret the **first** character of the `Pc` parameter (see the [terminal support table](#terminal-support)).
+
+**Trait implementations:**
+
+- `Display` — formats as the concatenated `Pc` parameter string, e.g., `ClipboardSelection(vec![Clipboard, Primary])` displays as `"cp"`.
+- `FromStr` — parses an OSC 52 `Pc` string (each character becomes a `ClipboardType`). `"cp".parse::<ClipboardSelection>()` yields `[Clipboard, Primary]`. Returns `Err(())` — this method always succeeds and never actually errors.
+
+```rust
+use std::str::FromStr;
+use crossterm::clipboard::{ClipboardSelection, ClipboardType};
+
+let sel = ClipboardSelection::from_str("cp").unwrap();
+assert_eq!(sel.0, vec![ClipboardType::Clipboard, ClipboardType::Primary]);
+```
+
+---
+
+## Terminal Support
+
+The following table documents which clipboard destination is actually written to by different terminal emulators for various `Pc` parameter values. Behavior varies significantly — especially for the `'cp'` vs `'pc'` order.
+
+| Terminal (Version) | dest `''` | dest `'c'` | dest `'p'` | dest `'cp'` | dest `'pc'` |
+|---|---|---|---|---|---|
+| xterm (397) | primary | clipboard | primary | clipboard + primary | clipboard + primary |
+| Alacritty (0.15.1) | clipboard | clipboard | primary | clipboard only | primary only |
+| WezTerm (20240203) | clipboard | clipboard | primary | clipboard only | clipboard only |
+| Konsole (24.12.3) | clipboard | clipboard | primary | clipboard + primary | clipboard + primary |
+| Kitty (0.40.0) | clipboard | clipboard | primary | clipboard only | clipboard only |
+| foot (1.20.2) | clipboard | clipboard | primary | clipboard + primary | clipboard + primary |
+| tmux (3.5a) ¹ | primary | clipboard | primary | clipboard + primary | clipboard + primary |
+
+¹ tmux with `set-clipboard` set to `external` (OSC 52 pass-through). Testing was done on Wayland with the primary selection protocol enabled.
+
+<Note>
+  For maximum compatibility across terminals, use `to_clipboard_from()` for the system clipboard or `to_primary_from()` for the primary selection, rather than constructing multi-destination selections where behavior diverges.
+</Note>
+
+---
+
+## Full Example
+
+```rust
+use std::io;
+
+use crossterm::{
+    clipboard::{ClipboardSelection, ClipboardType, CopyToClipboard},
+    execute,
+};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Copy a string to the system clipboard
+    execute!(stdout, CopyToClipboard::to_clipboard_from("Hello from Rust!"))?;
+    println!("Copied to clipboard.");
+
+    // Copy bytes to the primary selection (Linux/Wayland/X11 only)
+    execute!(stdout, CopyToClipboard::to_primary_from(b"selected bytes" as &[u8]))?;
+    println!("Copied to primary selection.");
+
+    // Copy to both clipboard and primary simultaneously
+    let both = ClipboardSelection(vec![
+        ClipboardType::Clipboard,
+        ClipboardType::Primary,
+    ]);
+    execute!(
+        stdout,
+        CopyToClipboard {
+            content: "copied everywhere",
+            destination: both,
+        },
+    )?;
+    println!("Copied to both destinations.");
+
+    Ok(())
+}
+```

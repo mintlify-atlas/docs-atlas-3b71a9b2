@@ -1,47 +1,173 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Crossterm in Minutes"
+sidebarTitle: "Quickstart"
+description: "Build your first crossterm program — styled text output and an interactive raw-mode event loop — in just a few steps."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+This guide walks you through creating two working Rust programs with crossterm: one that prints styled, colored text to the terminal, and a second that enters raw mode and responds to keyboard and mouse input in real time. By the end you will have a clear picture of how crossterm's command model works and where to go next.
 
 ## Prerequisites
 
-Before you begin, you must have:
+You need a working Rust toolchain at version **1.85.0 or later**. If you haven't installed Rust yet, visit [rustup.rs](https://rustup.rs/) and follow the instructions for your platform.
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+```sh
+rustc --version   # should print 1.85.0 or higher
+```
 
-## Get started
+## Steps
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+### Create a new Rust project
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+Use Cargo to scaffold a new binary project:
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
+```sh
+cargo new my-terminal-app
+cd my-terminal-app
+```
+
+### Add crossterm to Cargo.toml
+
+Open `Cargo.toml` and add crossterm under `[dependencies]`. For the interactive example in step 4 you will also need the `events` feature, which is included by default:
+
+```toml
+[dependencies]
+crossterm = "0.29"
+```
+
+### Print styled text to the terminal
+
+Replace the contents of `src/main.rs` with the following program. It uses the `execute!` macro to send a sequence of style commands directly to stdout — setting a foreground color, a background color, printing a message, then resetting all styles:
+
+```rust
+use std::io::{stdout, Write};
+
+use crossterm::{
+    execute,
+    style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
+};
+
+fn main() -> std::io::Result<()> {
+    // execute! writes each command to stdout and flushes immediately.
+    execute!(
+        stdout(),
+        SetForegroundColor(Color::Blue),
+        SetBackgroundColor(Color::Red),
+        Print("Styled text here."),
+        ResetColor
+    )?;
+
+    Ok(())
+}
+```
+
+Run it with:
+
+```sh
+cargo run
+```
+
+You should see `Styled text here.` rendered with blue text on a red background, with all terminal styles reset afterward.
+
+### Build an interactive program with raw mode and event reading
+
+Raw mode gives your program full control over terminal input — characters are delivered immediately, without waiting for the user to press Enter, and special keys like arrows and Escape are exposed as structured events rather than escape sequences.
+
+The example below enables raw mode, turns on mouse capture, then loops reading events until the user presses `Esc`. It is adapted directly from the crossterm `event-poll-read` example:
+
+```rust
+use std::{io, time::Duration};
+
+use crossterm::{
+    cursor::position,
+    event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, poll, read},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
+
+fn print_events() -> io::Result<()> {
+    loop {
+        // Block for up to 1 second waiting for the next event.
+        if poll(Duration::from_millis(1_000))? {
+            // read() will not block because poll() returned Ok(true).
+            let event = read()?;
+
+            println!("Event::{event:?}\r");
+
+            if event == Event::Key(KeyCode::Char('c').into()) {
+                println!("Cursor position: {:?}\r", position());
+            }
+
+            if event == Event::Key(KeyCode::Esc.into()) {
+                break;
+            }
+        } else {
+            // No event arrived within 1 second.
+            println!(".\r");
+        }
+    }
+
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    println!("Press 'c' to print cursor position, Esc to quit.\r");
+
+    // Enable raw mode so keystrokes are delivered immediately.
+    enable_raw_mode()?;
+
+    let mut stdout = io::stdout();
+
+    // Enable mouse event reporting.
+    execute!(stdout, EnableMouseCapture)?;
+
+    if let Err(e) = print_events() {
+        println!("Error: {e:?}\r");
+    }
+
+    // Always disable mouse capture and raw mode before exiting.
+    execute!(stdout, DisableMouseCapture)?;
+    disable_raw_mode()
+}
+```
+
+<Note>
+  Always call `disable_raw_mode()` before your program exits, even on error. Leaving the terminal in raw mode will make the shell unusable after your process ends. Consider using a `Drop` guard or `std::panic::catch_unwind` in production code.
+</Note>
+
+Run the interactive program:
+
+```sh
+cargo run
+```
+
+Press any key or move the mouse to see events printed. Press `Esc` to exit cleanly.
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## `execute!` vs `queue!`
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+Both macros write commands to an output stream, but they differ in when they flush:
+
+| Macro | Behavior |
+|:---|:---|
+| `execute!(writer, cmd1, cmd2, …)` | Writes all commands **and immediately flushes** the output buffer. Use this for simple, infrequent updates. |
+| `queue!(writer, cmd1, cmd2, …)` | Writes all commands **without flushing**. Call `writer.flush()` manually when you are ready to display the batched output. |
+
+For TUI applications that redraw many times per second, `queue!` followed by a single `flush()` at the end of each frame is significantly more efficient than calling `execute!` for every change.
+
+<Note>
+  Both `execute!` and `queue!` are built on the `ExecutableCommand` and `QueueableCommand` traits. You can also call `.execute(cmd)?` or `.queue(cmd)?` directly on any type that implements `std::io::Write`. See the [Command API](/concepts/command-api) page for a full explanation.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Command API" icon="terminal" href="/concepts/command-api">
+    Deep-dive into direct vs. lazy execution, custom commands, and output targets.
+  </Card>
+  <Card title="API Reference" icon="book" href="https://docs.rs/crossterm/">
+    Browse every supported command across the cursor, style, event, and terminal modules.
+  </Card>
+</CardGroup>

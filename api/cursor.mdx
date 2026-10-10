@@ -1,0 +1,318 @@
+---
+title: "cursor Module API Reference — Crossterm"
+sidebarTitle: "cursor"
+description: "API reference for the crossterm cursor module — movement commands, visibility, blinking, cursor style, and the position() query function."
+---
+
+The `cursor` module provides everything you need to control the terminal cursor: absolute and relative movement, saving and restoring cursor positions, toggling visibility and blinking, and selecting cursor shape. All operations are expressed as *commands* that must be executed or queued via `execute!` / `queue!` — writing a command struct to a variable alone has no effect on the terminal. The only free function, `position()`, is gated behind the `events` feature flag and performs a live query to the terminal.
+
+---
+
+## Functions
+
+### `position`
+
+```rust
+#[cfg(feature = "events")]
+pub fn position() -> io::Result<(u16, u16)>
+```
+
+Returns the current cursor position as `(column, row)`. Both values are **0-indexed** — the top-left cell is `(0, 0)`.
+
+<Note>
+  `position()` is only available when the `events` Cargo feature is enabled. It performs a blocking read from the terminal to retrieve the cursor location, so raw mode should be active when calling it.
+</Note>
+
+---
+
+## Commands
+
+All cursor commands implement the `Command` trait and are used with the `execute!` or `queue!` macros. Every command is a struct (or enum) whose tuple fields are its parameters.
+
+### Movement — Absolute
+
+#### `MoveTo`
+
+```rust
+pub struct MoveTo(pub u16, pub u16);
+```
+
+Moves the cursor to an absolute position. The first field is the **column** and the second is the **row**, both **0-indexed**. The top-left corner of the screen is `(0, 0)`.
+
+<ParamField path="col" type="u16" required>
+  Target column, 0-indexed from the left edge of the screen.
+</ParamField>
+<ParamField path="row" type="u16" required>
+  Target row, 0-indexed from the top edge of the screen.
+</ParamField>
+
+---
+
+#### `MoveToColumn`
+
+```rust
+pub struct MoveToColumn(pub u16);
+```
+
+Moves the cursor to the given column on the **current row**. 0-indexed — column 0 is the leftmost cell.
+
+<ParamField path="col" type="u16" required>
+  Target column, 0-indexed.
+</ParamField>
+
+---
+
+#### `MoveToRow`
+
+```rust
+pub struct MoveToRow(pub u16);
+```
+
+Moves the cursor to the given row on the **current column**. 0-indexed — row 0 is the topmost row.
+
+<ParamField path="row" type="u16" required>
+  Target row, 0-indexed.
+</ParamField>
+
+---
+
+### Movement — Relative Lines
+
+#### `MoveToNextLine`
+
+```rust
+pub struct MoveToNextLine(pub u16);
+```
+
+Moves the cursor **down** `n` lines and resets it to **column 0**. **1-based**: `MoveToNextLine(1)` moves to the next line. Most terminals treat an argument of `0` as `1`.
+
+<ParamField path="n" type="u16" required>
+  Number of lines to move down. 1-based.
+</ParamField>
+
+---
+
+#### `MoveToPreviousLine`
+
+```rust
+pub struct MoveToPreviousLine(pub u16);
+```
+
+Moves the cursor **up** `n` lines and resets it to **column 0**. **1-based**: `MoveToPreviousLine(1)` moves to the previous line. Most terminals treat an argument of `0` as `1`.
+
+<ParamField path="n" type="u16" required>
+  Number of lines to move up. 1-based.
+</ParamField>
+
+---
+
+### Movement — Relative Cells
+
+#### `MoveUp`
+
+```rust
+pub struct MoveUp(pub u16);
+```
+
+Moves the cursor up `n` rows without changing the column. **1-based**.
+
+<ParamField path="n" type="u16" required>
+  Number of rows to move up. 1-based.
+</ParamField>
+
+---
+
+#### `MoveDown`
+
+```rust
+pub struct MoveDown(pub u16);
+```
+
+Moves the cursor down `n` rows without changing the column. **1-based**.
+
+<ParamField path="n" type="u16" required>
+  Number of rows to move down. 1-based.
+</ParamField>
+
+---
+
+#### `MoveRight`
+
+```rust
+pub struct MoveRight(pub u16);
+```
+
+Moves the cursor right `n` columns without changing the row. **1-based**.
+
+<ParamField path="n" type="u16" required>
+  Number of columns to move right. 1-based.
+</ParamField>
+
+---
+
+#### `MoveLeft`
+
+```rust
+pub struct MoveLeft(pub u16);
+```
+
+Moves the cursor left `n` columns without changing the row. **1-based**.
+
+<ParamField path="n" type="u16" required>
+  Number of columns to move left. 1-based.
+</ParamField>
+
+---
+
+### Save & Restore
+
+#### `SavePosition`
+
+```rust
+pub struct SavePosition;
+```
+
+Saves the current cursor position to a globally shared slot. Restore it later with `RestorePosition`. Only one position can be stored at a time — a second `SavePosition` overwrites the first.
+
+---
+
+#### `RestorePosition`
+
+```rust
+pub struct RestorePosition;
+```
+
+Restores the cursor to the position most recently stored by `SavePosition`.
+
+---
+
+### Visibility
+
+#### `Show`
+
+```rust
+pub struct Show;
+```
+
+Makes the cursor visible. Pairs with `Hide`.
+
+---
+
+#### `Hide`
+
+```rust
+pub struct Hide;
+```
+
+Hides the cursor from view. Pairs with `Show`.
+
+---
+
+### Blinking
+
+#### `EnableBlinking`
+
+```rust
+pub struct EnableBlinking;
+```
+
+Enables cursor blinking.
+
+<Warning>
+  Some Unix terminals (e.g., GNOME Terminal and Konsole) and Windows versions older than Windows 10 do not support `EnableBlinking` / `DisableBlinking`. Prefer `SetCursorStyle` for broader compatibility.
+</Warning>
+
+---
+
+#### `DisableBlinking`
+
+```rust
+pub struct DisableBlinking;
+```
+
+Disables cursor blinking. Subject to the same compatibility caveats as `EnableBlinking`.
+
+---
+
+### Cursor Style
+
+#### `SetCursorStyle`
+
+```rust
+pub enum SetCursorStyle {
+    DefaultUserShape,
+    BlinkingBlock,
+    SteadyBlock,
+    BlinkingUnderScore,
+    SteadyUnderScore,
+    BlinkingBar,
+    SteadyBar,
+}
+```
+
+Sets both the shape and blinking behaviour of the cursor in a single command. Uses two ANSI escape sequences internally — one for the shape and one for blink control.
+
+| Variant | Shape | Blinks |
+|---|---|---|
+| `DefaultUserShape` | Terminal default (user configured) | Per terminal setting |
+| `BlinkingBlock` | Full block (**■**) | Yes |
+| `SteadyBlock` | Full block (**■**) | No |
+| `BlinkingUnderScore` | Underscore (**_**) | Yes |
+| `SteadyUnderScore` | Underscore (**_**) | No |
+| `BlinkingBar` | Vertical bar (**\|**) | Yes |
+| `SteadyBar` | Vertical bar (**\|**) | No |
+
+---
+
+## Code Example
+
+```rust
+use std::io::{self, Write};
+
+use crossterm::{
+    ExecutableCommand, QueueableCommand,
+    cursor::{
+        DisableBlinking, EnableBlinking, Hide, MoveTo, MoveToNextLine,
+        MoveUp, RestorePosition, SavePosition, SetCursorStyle, Show,
+    },
+    execute, queue,
+};
+
+fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+
+    // Save the current position, jump somewhere, then restore
+    execute!(
+        stdout,
+        SavePosition,
+        MoveTo(10, 5),
+        EnableBlinking,
+        SetCursorStyle::BlinkingBar,
+    )?;
+
+    // Write some text then move back up two lines
+    print!("Hello from (10,5)!");
+    stdout.flush()?;
+
+    execute!(
+        stdout,
+        MoveToNextLine(1),
+        MoveUp(2),
+        RestorePosition,
+    )?;
+
+    // Toggle visibility
+    execute!(stdout, Hide)?;
+    // ... do work ...
+    execute!(stdout, Show)?;
+
+    // Restore default cursor style
+    execute!(stdout, DisableBlinking, SetCursorStyle::DefaultUserShape)?;
+
+    Ok(())
+}
+```
+
+<Tip>
+  Use `queue!` + `stdout.flush()` when you need to batch multiple cursor commands together for flicker-free rendering. Use `execute!` for one-off, immediately-applied operations.
+</Tip>
