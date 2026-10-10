@@ -1,7 +1,7 @@
 ---
 title: "Crossterm Traits: Command, Execute, Queue, and Sync"
 sidebarTitle: "Traits"
-description: "Reference for the four core crossterm traits that define the command execution model for terminal manipulation."
+description: "Reference for the four core crossterm traits — Command, QueueableCommand, ExecutableCommand, and SynchronizedUpdate — for terminal command execution."
 ---
 
 Crossterm's execution model is built on four public traits. `Command` is the unit of work — any struct that implements it can describe a terminal action as an ANSI escape sequence. The other three traits — `QueueableCommand`, `ExecutableCommand`, and `SynchronizedUpdate` — are blanket-implemented for every type that implements `std::io::Write`, so you get their methods for free on `stdout`, `stderr`, or any custom buffer the moment you bring the traits into scope.

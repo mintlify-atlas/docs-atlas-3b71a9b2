@@ -1,7 +1,7 @@
 ---
-title: "Feature Flags: Configuring Crossterm Dependencies"
+title: "Crossterm Feature Flags and Cargo.toml Configuration"
 sidebarTitle: "Feature Flags"
-description: "Overview of crossterm feature flags and how to enable or disable them in your Cargo.toml for a minimal or full build."
+description: "Overview of all crossterm Cargo feature flags — default, optional, and their transitive dependencies — with examples for minimal and full builds."
 ---
 
 Crossterm is designed to be used as either a full-featured terminal library or an extremely thin wrapper, depending on how much of its functionality your project actually needs. Feature flags let you opt in to capabilities like async event streams, serialization, clipboard support, or raw file-descriptor polling while keeping unnecessary compile-time dependencies out of your binary. Two features — `bracketed-paste` and `events` — are enabled by default; everything else is opt-in.

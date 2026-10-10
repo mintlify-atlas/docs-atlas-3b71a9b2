@@ -1,7 +1,7 @@
 ---
-title: "Copying to Clipboard with OSC52 in Crossterm"
+title: "Copy Text to the Clipboard Using OSC52 in Crossterm"
 sidebarTitle: "Clipboard"
-description: "How to copy text to the system clipboard from the terminal using crossterm's OSC52 clipboard feature."
+description: "Copy text to the system clipboard from any terminal, including over SSH, using crossterm's OSC52 escape sequence and the osc52 Cargo feature flag."
 ---
 
 OSC52 is an ANSI escape sequence (`Pr = 52`) that instructs a terminal emulator to place a base64-encoded string into the host system clipboard, bypassing the need for X11 or Wayland APIs entirely. Because the sequence travels over the same TTY channel used for all other terminal I/O, it works over SSH sessions, inside containers, and anywhere else the terminal's PTY is available — as long as the terminal emulator (and any multiplexer in between) is configured to honour it. Crossterm exposes OSC52 through the `clipboard` module, which is gated behind the optional `osc52` Cargo feature.
@@ -92,7 +92,7 @@ use crossterm::execute;
 fn main() -> io::Result<()> {
     let mut stdout = io::stdout();
     let mut args = std::env::args();
-    args.next(); // skip program name
+    args.next(); // Skip to first argument
 
     let default_text = String::from("Example text");
     let (text, dest) = match args.next().as_deref() {

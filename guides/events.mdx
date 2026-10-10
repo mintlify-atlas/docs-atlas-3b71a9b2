@@ -1,7 +1,7 @@
 ---
 title: "Reading Terminal Events: Keyboard, Mouse, and Resize"
 sidebarTitle: "Events"
-description: "how to read keyboard, mouse, focus, resize, and paste events using crossterm's event system."
+description: "Learn how to read keyboard, mouse, focus, resize, and paste events with crossterm's cross-platform event system using read(), poll(), and try_read()."
 ---
 
 crossterm's event system gives you a unified, cross-platform way to react to everything that happens in the terminal: keystrokes, mouse movements and clicks, window focus changes, terminal resize, and even bracketed paste. All events flow through a single `Event` enum, and two complementary functions — `read()` for blocking reads and `poll()` for timed checks — let you integrate event handling into any application loop.

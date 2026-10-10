@@ -1,7 +1,7 @@
 ---
-title: "Platform Support and Compatibility in Crossterm"
+title: "Crossterm Platform Support, Terminals, and MSRV 1.85"
 sidebarTitle: "Platform Support"
-description: "Which operating systems and terminal emulators crossterm supports, including ANSI vs WinAPI fallback and MSRV details."
+description: "Which operating systems and terminal emulators crossterm supports, including ANSI vs WinAPI fallback behavior, MSRV 1.85.0, and multi-thread safety."
 ---
 
 Crossterm is a pure-Rust, cross-platform terminal library that supports all UNIX-like systems and Windows terminals down to Windows 7. It achieves this broad reach through a single unified API: on UNIX and modern Windows the library writes standard ANSI/VT100 escape sequences, while on older Windows versions it transparently falls back to direct Windows Console API (WinAPI) calls — all without any changes to your application code. The library is also fully multi-threaded: all public types implement `Send + Sync`.

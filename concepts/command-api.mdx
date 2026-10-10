@@ -1,7 +1,7 @@
 ---
 title: "The Command API: Queuing and Executing Terminal Commands"
 sidebarTitle: "Command API"
-description: "How the crossterm Command API works with lazy queue and direct execute modes for efficient terminal manipulation."
+description: "How the crossterm Command API works — using lazy queue and direct execute modes to efficiently manipulate the terminal with ANSI or WinAPI commands."
 ---
 
 The Command API is the heart of crossterm's design. Rather than exposing raw escape sequences or platform-specific system calls, crossterm wraps every terminal action — cursor movement, color changes, screen clearing, and more — into a **command**: a small, self-describing value that knows how to apply itself to any `std::io::Write` target. This abstraction gives you complete control over *when* output is flushed, *where* it is written, and *how* it adapts to the underlying platform, all without boilerplate.

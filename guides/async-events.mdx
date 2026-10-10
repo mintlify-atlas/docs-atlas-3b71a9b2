@@ -1,7 +1,7 @@
 ---
-title: "Async Event Streaming with Tokio and smol"
+title: "Async Terminal Event Streaming with Tokio and smol"
 sidebarTitle: "Async Events"
-description: "How to use crossterm's EventStream to read terminal events asynchronously with Tokio or smol runtimes."
+description: "Use crossterm's EventStream to receive terminal events asynchronously with Tokio or smol. Handle keyboard, mouse, and resize events in async Rust programs."
 ---
 
 Crossterm's `EventStream` bridges the terminal event system with the Rust async ecosystem. Rather than calling the blocking `read()` function or polling in a tight loop, you receive keyboard, mouse, and resize events through a standard `futures_core::Stream`, which integrates naturally with `select!` macros, async task combinators, and any executor that drives futures — including Tokio and smol. This lets you react to terminal input as one branch of a larger async program without dedicating a thread to blocking I/O.

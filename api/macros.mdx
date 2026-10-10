@@ -1,7 +1,7 @@
 ---
-title: "execute! and queue! Macros Reference"
+title: "Crossterm execute! and queue! Macros API Reference"
 sidebarTitle: "Macros"
-description: "Reference for the execute! and queue! macros that write and flush crossterm commands to any io::Write target."
+description: "Reference for the crossterm execute! and queue! macros — write and optionally flush terminal commands to any io::Write target with one call."
 ---
 
 Crossterm exposes two macros — `execute!` and `queue!` — that provide a concise, low-boilerplate way to send one or more commands to any `io::Write` target. Both macros accept a writer as their first argument followed by an arbitrary number of commands separated by commas, process them in left-to-right order, and return `io::Result<()>`. The key difference is whether they flush: `execute!` always flushes after queuing all commands, while `queue!` writes the ANSI bytes and leaves flushing to you.
@@ -10,7 +10,7 @@ Crossterm exposes two macros — `execute!` and `queue!` — that provide a conc
 
 ## `execute!` macro
 
-```
+```text
 execute!(writer, Command1, Command2, ...)
 ```
 
@@ -78,7 +78,7 @@ fn main() -> io::Result<()> {
 
 ## `queue!` macro
 
-```
+```text
 queue!(writer, Command1, Command2, ...)
 ```
 

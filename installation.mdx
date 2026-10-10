@@ -1,7 +1,7 @@
 ---
-title: "Installing Crossterm in Your Rust Project"
+title: "Crossterm Installation: Cargo Setup and Feature Flags"
 sidebarTitle: "Installation"
-description: "Learn how to add crossterm as a Cargo dependency and configure feature flags for your project's needs."
+description: "Add crossterm to your Rust project with a single Cargo.toml line. This page covers the current version, available feature flags, and the MSRV."
 ---
 
 Adding crossterm to a Rust project is a single line in your `Cargo.toml`. Crossterm is published on [crates.io](https://crates.io/crates/crossterm) and has full API documentation on [docs.rs](https://docs.rs/crossterm/). The current release is **0.29.0**.
@@ -36,7 +36,7 @@ These features are active unless you explicitly opt out with `default-features =
 |:---|:---|
 | `event-stream` | Enables [`EventStream`](https://docs.rs/crossterm/latest/crossterm/event/struct.EventStream.html), a `futures::Stream` that produces `Result<Event>`. Requires the `events` feature. |
 | `serde` | Enables `serde::Serialize` and `serde::Deserialize` for crossterm's event and color types. |
-| `use-dev-tty` | Uses raw file descriptor polling/selecting (via `filedescriptor`) instead of `mio`. Useful when you need to avoid the `mio` dependency on UNIX. |
+| `use-dev-tty` | Uses raw file descriptor polling/selecting (via `filedescriptor` and `rustix/process`) instead of `mio`. Useful when you need to avoid the `mio` dependency on UNIX. |
 | `osc52` | Enables the [`clipboard`](https://docs.rs/crossterm/latest/crossterm/clipboard/index.html) module and the `CopyToClipboard` command for interacting with the host clipboard via OSC 52 sequences. |
 | `document-features` | Enables documentation for crate features (used when building docs). |
 

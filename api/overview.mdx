@@ -1,7 +1,7 @@
 ---
-title: "Crossterm API Reference Overview"
+title: "Crossterm API Reference: Modules, Traits, and Macros"
 sidebarTitle: "Overview"
-description: "Complete overview of the crossterm public API surface, organized by module with links to detailed references."
+description: "Complete overview of the crossterm public API — cursor, style, event, terminal, and clipboard modules, plus root-level traits and macros."
 ---
 
 Crossterm is a pure-Rust, cross-platform terminal manipulation library that targets all UNIX systems and Windows terminals down to Windows 7. Its public API is organized into focused modules — each covering a distinct concern such as cursor movement, text styling, or event reading — all unified by a small set of root-level traits and macros that form the [Command API](/api/traits). Every action the library can perform is expressed as a `Command`: a value that knows how to write its ANSI escape sequence (or fall back to a WinAPI call on older Windows) and can be queued for batched output or executed immediately.

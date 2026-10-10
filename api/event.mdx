@@ -1,10 +1,10 @@
 ---
-title: "event Module API Reference — Crossterm"
+title: "Crossterm event Module: Keyboard, Mouse, and Resize"
 sidebarTitle: "event"
-description: "API reference for the crossterm event module — read, poll, try_read, Event variants, KeyEvent, MouseEvent, and async EventStream."
+description: "API reference for the crossterm event module — read, poll, try_read, Event variants, KeyEvent, MouseEvent, keyboard enhancements, and async EventStream."
 ---
 
-The `event` module provides a unified interface for reading keyboard, mouse, focus, paste, and terminal resize events. Events are represented by the `Event` enum and its associated types. You can block on an event with `read()`, check availability without blocking with `poll()`, or drain all pending events with `try_read()`. Alternatively, enable the `event-stream` feature to consume events as an asynchronous `Stream`. Mouse and focus events are disabled by default and must be explicitly enabled with the corresponding commands before they will appear in the event stream.
+The `event` module provides a unified interface for reading keyboard, mouse, focus, paste, and terminal resize events. It requires the **`events`** Cargo feature, which is enabled by default. Events are represented by the `Event` enum and its associated types. You can block on an event with `read()`, check availability without blocking with `poll()`, or drain all pending events with `try_read()`. Alternatively, enable the `event-stream` feature to consume events as an asynchronous `Stream`. Mouse and focus events are disabled by default and must be explicitly enabled with the corresponding commands before they will appear in the event stream.
 
 <Warning>
   `read()`, `poll()`, and `try_read()` must all be called from the **same** thread. Do not mix them with `EventStream`. Raw mode should be enabled for keyboard events to work correctly.
@@ -471,7 +471,7 @@ Pops one level of keyboard enhancement flags, reverting to the previous state.
 pub struct EventStream { /* … */ }
 ```
 
-When the `event-stream` Cargo feature is enabled, `EventStream` provides an asynchronous `Stream<Item = io::Result<Event>>` suitable for use with `tokio`, `async-std`, or any executor that supports `futures`. It cannot be used on the same thread as `read()` / `poll()`.
+When the `event-stream` Cargo feature is enabled (which also enables the `events` feature automatically), `EventStream` provides an asynchronous `Stream<Item = io::Result<Event>>` suitable for use with `tokio`, `async-std`, or any executor that supports `futures`. It cannot be used on the same thread as `read()` / `poll()`.
 
 ```rust
 use crossterm::event::{Event, EventStream, KeyCode};

@@ -1,7 +1,7 @@
 ---
 title: "Terminal Control: Raw Mode, Alternate Screen, and More"
 sidebarTitle: "Terminal"
-description: "how to manage raw mode, alternate screen buffers, terminal size, and output in crossterm."
+description: "Learn how to manage raw mode, alternate screen buffers, terminal size, clearing, scrolling, line wrapping, synchronized updates, and more with crossterm."
 ---
 
 crossterm's `terminal` module gives you direct control over the terminal emulator itself: switching input processing modes, flipping between screen buffers, querying and adjusting the terminal dimensions, clearing and scrolling content, and fine-tuning output behaviour such as line wrapping and synchronized rendering. Most operations are expressed as crossterm _commands_ dispatched via `execute!` or `queue!`, with a small set of stand-alone functions for the things that return data (like `size()`) or that affect persistent OS-level state (like `enable_raw_mode()`).
@@ -288,6 +288,29 @@ fn main() -> io::Result<()> {
 <Tip>
 Wrap every frame of your render loop in `BeginSynchronizedUpdate` / `EndSynchronizedUpdate` to eliminate tearing on supported terminals. Terminals that do not implement the protocol simply ignore the sequences, so it is safe to use unconditionally.
 </Tip>
+
+## Keyboard enhancement support
+
+`supports_keyboard_enhancement()` queries whether the running terminal supports the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/). It is gated behind the `events` feature flag (enabled by default) and returns `io::Result<bool>`.
+
+Call this before enabling `PushKeyboardEnhancementFlags` — attempting to push enhancement flags on an unsupported terminal returns an `Unsupported` error on Windows and produces no useful effect on Unix terminals that don't implement the protocol.
+
+```rust
+use crossterm::terminal::supports_keyboard_enhancement;
+
+fn main() -> std::io::Result<()> {
+    match supports_keyboard_enhancement() {
+        Ok(true)  => println!("Kitty keyboard protocol is supported"),
+        Ok(false) => println!("Kitty keyboard protocol is not supported"),
+        Err(e)    => println!("Could not query keyboard enhancement: {e}"),
+    }
+    Ok(())
+}
+```
+
+<Note>
+`supports_keyboard_enhancement()` is not available on Windows legacy consoles and will always return `Ok(false)` there. On Unix it briefly reads from the terminal, so raw mode is not required but the function handles both states internally.
+</Note>
 
 ## Cleanup pattern
 

@@ -186,13 +186,19 @@ fn main() {
 | `Attribute::Hidden` | Hide text (Conceal) | ✓ | ✓ |
 | `Attribute::CrossedOut` | Strikethrough text | ✓ | ✓ |
 | `Attribute::Fraktur` | Fraktur typeface | ✗ | ✓ |
-| `Attribute::OverLined` | Line above the text | ? | ? |
+| `Attribute::NoBold` | Turn off Bold (prefer `NormalIntensity`) | ? | ? |
 | `Attribute::NormalIntensity` | Remove Bold/Dim | ✓ | ✓ |
+| `Attribute::NoItalic` | Remove italic | ✓ | ✓ |
 | `Attribute::NoUnderline` | Remove underline | ✓ | ✓ |
 | `Attribute::NoBlink` | Remove blinking | ✓ | ✓ |
 | `Attribute::NoReverse` | Remove reverse | ✓ | ✓ |
 | `Attribute::NoHidden` | Remove hidden | ✓ | ✓ |
 | `Attribute::NotCrossedOut` | Remove strikethrough | ✓ | ✓ |
+| `Attribute::Framed` | Framed text | ? | ? |
+| `Attribute::Encircled` | Encircled text | ? | ? |
+| `Attribute::OverLined` | Line above the text | ? | ? |
+| `Attribute::NotFramedOrEncircled` | Remove Framed/Encircled | ? | ? |
+| `Attribute::NotOverLined` | Remove OverLined | ? | ? |
 
 <Warning>
 Only UNIX terminals and Windows 10+ support text attributes. On older Windows, `SetAttribute` is silently ignored. Not all terminals support every attribute — `Italic`, `SlowBlink`, `RapidBlink`, `Fraktur`, `OverLined`, and the fancy underline variants (`Undercurled`, `Underdotted`, `Underdashed`) are particularly inconsistent across terminal emulators.
@@ -250,7 +256,7 @@ The `Stylize` trait provides a fluent builder API for styling strings directly. 
 
 **Color setters** (each color has `.<color>()` for fg, `.on_<color>()` for bg, and `.underline_<color>()` for underline color):
 
-```
+```text
 .black()   .on_black()   .underline_black()
 .red()     .on_red()     .underline_red()
 .green()   .on_green()   .underline_green()
@@ -267,7 +273,7 @@ For arbitrary colors use `.with(Color)`, `.on(Color)`, and `.underline(Color)`.
 
 **Attribute setters:**
 
-```
+```text
 .bold()        .dim()         .italic()
 .underlined()  .reverse()     .negative()   // alias for .reverse()
 .slow_blink()  .rapid_blink() .hidden()
@@ -346,10 +352,7 @@ use std::io::{self, Write};
 
 use crossterm::{
     execute,
-    style::{
-        Print,
-        hyperlink::{StartHyperlink, EndHyperlink},
-    },
+    style::{Print, StartHyperlink, EndHyperlink},
 };
 
 fn main() -> io::Result<()> {
@@ -365,7 +368,7 @@ fn main() -> io::Result<()> {
 `StartHyperlink` also accepts optional key-value parameters via the `.param(key, value)` builder method, which are included in the OSC 8 escape sequence (e.g., for link `id` tracking):
 
 ```rust
-use crossterm::style::hyperlink::StartHyperlink;
+use crossterm::style::StartHyperlink;
 
 let link = StartHyperlink::new("https://example.com")
     .param("id", "link1");
